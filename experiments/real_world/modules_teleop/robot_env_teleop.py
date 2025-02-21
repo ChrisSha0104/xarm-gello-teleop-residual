@@ -10,6 +10,9 @@ import os
 import pickle
 import transforms3d
 import subprocess
+import torch
+
+from .encoded_actor_critic import ActorCriticVisual
 from pynput import keyboard
 from pathlib import Path
 from copy import deepcopy
@@ -21,6 +24,7 @@ from modules_teleop.perception import Perception
 from modules_teleop.xarm_controller import XarmController
 from modules_teleop.teleop_keyboard import KeyboardTeleop
 from gello.teleop_gello import GelloTeleop
+from gello.teleop_gello_residual import GelloTeleopResidual
 from camera.multi_realsense import MultiRealsense
 from camera.single_realsense import SingleRealsense
 
@@ -53,6 +57,8 @@ class RobotTeleopEnv(mp.Process):
 
         use_robot: bool = False,
         use_gello: bool = False,
+        use_residual_policy: bool = False,
+        load_model: str = '',
         # xarm_controller: XarmController | None = None,
         robot_ip: str | None = '192.168.1.196',
         gripper_enable: bool = False,
@@ -166,7 +172,9 @@ class RobotTeleopEnv(mp.Process):
         # Robot setup
         self.use_robot = use_robot
         self.use_gello = use_gello
-        if use_robot:
+
+        # use teleop without residual policy
+        if use_robot and not use_residual_policy:
             # if xarm_controller is not None:
             #     assert isinstance(xarm_controller, XarmController)
             #     self.xarm_controller = xarm_controller
@@ -203,6 +211,41 @@ class RobotTeleopEnv(mp.Process):
                 )
                 self.left_xarm_controller = None
                 self.right_xarm_controller = None
+        # use teleop with residual policy
+        elif use_robot and use_residual_policy:
+            if bimanual:
+                self.left_xarm_controller = XarmController(
+                    start_time=time.time(),
+                    ip=bimanual_robot_ip[0],
+                    gripper_enable=gripper_enable,
+                    mode=mode,
+                    command_mode='cartesian',
+                    robot_id=0,
+                    verbose=False,
+                )
+                self.right_xarm_controller = XarmController(
+                    start_time=time.time(),
+                    ip=bimanual_robot_ip[1],
+                    gripper_enable=gripper_enable,
+                    mode=mode,
+                    command_mode='cartesian',
+                    robot_id=1,
+                    verbose=False,
+                )
+                self.xarm_controller = None
+            else:
+                self.xarm_controller = XarmController(
+                    start_time=time.time(),
+                    ip=robot_ip,
+                    gripper_enable=gripper_enable,
+                    mode=mode,
+                    command_mode='cartesian',
+                    robot_id=-1,
+                    verbose=False,
+                )
+                self.left_xarm_controller = None
+                self.right_xarm_controller = None
+        # disable teleop
         else:
             self.left_xarm_controller = None
             self.right_xarm_controller = None
@@ -231,6 +274,75 @@ class RobotTeleopEnv(mp.Process):
 
         # robot eef
         self.eef_point = np.array([[0.0, 0.0, 0.175]])  # the eef point in the gripper frame
+
+        # residual policy inputs
+        self.use_residual_policy = use_residual_policy
+        self.model_path = load_model
+        self.prev_time = 0
+        self.update_flag = False
+
+        if self.use_residual_policy:
+            self.actor_critic = ActorCriticVisual(184,192,8) #TODO: hardcoded input dim
+            self.policy = self.get_policy(self.actor_critic, self.model_path)
+            assert(use_gello, "Residual policy requires gello")
+            print("Residual policy loaded")
+
+            self.visual_obs = np.zeros((120*120), dtype=np.float32)
+            self.teleop_states_obs = np.zeros((8*4), dtype=np.float32)
+            self.robot_states_obs = np.zeros((8*3), dtype=np.float32)
+        
+        if self.use_robot:
+            if self.use_gello and not self.use_residual_policy:
+                self.teleop = GelloTeleop(bimanual=self.bimanual)
+            if self.use_gello and self.use_residual_policy:
+                self.teleop = GelloTeleopResidual(bimanual=self.bimanual, policy=self.policy)
+            else:
+                self.teleop = KeyboardTeleop()
+
+    def get_policy(self, actor_critic: ActorCriticVisual, model_path: str) -> Callable: #TODO: add empirical normalizatiopn
+        model = torch.load(model_path)
+        actor_critic.load_state_dict(model['model_state_dict'])
+        policy = actor_critic.act_inference
+        return policy
+    
+    def get_observations(self):
+        obs = np.concatenate([self.visual_obs, self.teleop_states_obs, self.robot_states_obs], axis=1)
+        return obs
+
+    def gripper_sim2real(self, sim_gripper_status: float) -> float:
+        """
+        Maps the simulator's gripper status (0.0 open, 0.84 closed) back to the real robot's gripper status (800 open, 0 closed)
+        using the inverse of a quadratic function.
+
+        Args:
+            sim_gripper_status (float): Gripper status from the simulator (range: 0.0 to 0.84).
+
+        Returns:
+            float: Mapped gripper status for the real robot (range: 800 to 0).
+        """
+        a, b, c = -1.3522e-6, 3.1781e-5, 0.84
+        c_prime = c - sim_gripper_status  # Adjusted constant term
+        
+        # Compute the discriminant
+        discriminant = b**2 - 4 * a * c_prime
+        if discriminant < 0:
+            raise ValueError("No real solution exists for the given simulator gripper status.")
+
+        # Compute the two possible solutions
+        sqrt_discriminant = math.sqrt(discriminant)
+        s1 = (-b + sqrt_discriminant) / (2 * a)
+        s2 = (-b - sqrt_discriminant) / (2 * a)
+
+        # Choose the valid solution within the real gripper range [0, 800]
+        if 0 <= s1 <= 800:
+            return s1
+        elif 0 <= s2 <= 800:
+            return s2
+        else:
+            raise ValueError("No valid real gripper status found within range [0, 800].")
+
+    def mp2np(self, mp_array: mp.Array) -> np.array:
+        return np.frombuffer(mp_array.get_obj())  
 
     def real_start(self, start_time) -> None:
         self._real_alive.value = True
@@ -307,6 +419,17 @@ class RobotTeleopEnv(mp.Process):
                 }
         return
 
+    def _update_teleop_command(self) -> None:
+        if self.teleop.alive.value:
+            self.state["teleop_command"] = {
+                "time": time.time(),
+                "value": self.mp2np(self.teleop.command[:])
+            }
+            if self.update_flag == True:
+                self._update_teleop_states_obs()
+                self.update_flag = False
+        return
+
     def _update_robot(self) -> None:
         if self.bimanual:
             if self.left_xarm_controller.is_controller_alive and self.right_xarm_controller.is_controller_alive:
@@ -334,7 +457,26 @@ class RobotTeleopEnv(mp.Process):
                         "time": time.time(),
                         "value": self.xarm_controller.cur_gripper_q.get()
                     }
+
+                if self.use_residual_policy:
+                    if (time.time() - self.prev_time) > 0.01: 
+                        self._update_robot_states_obs()
+                        self.prev_time = time.time()
+                        self.update_flag = True
         return
+
+    def _update_robot_states_obs(self) -> None:
+        self.robot_states_obs = np.roll(self.robot_states_obs, shift=8, axis=1)
+        self.robot_states_obs[:7] = self.state['robot_out']['value'][:7] 
+        gripper_obs = self.gripper_sim2real(self.state['robot_out']['value'][-1]) 
+        self.robot_states_obs[7] = gripper_obs
+        
+
+    def _update_teleop_states_obs(self) -> None: 
+        self.teleop_states_obs = np.roll(self.teleop_states_obs, shift=8, axis=1)
+        self.teleop_states_obs[:7] = self.state['teleop_command']['value'][:7]
+        gripper_obs = self.gripper_sim2real(self.state['teleop_command']['value'][-1]) 
+        self.robot_states_obs[7] = gripper_obs
 
     def update_real_state(self) -> None:
         while self.real_alive:
@@ -343,6 +485,8 @@ class RobotTeleopEnv(mp.Process):
                     self._update_robot()
                 if self.perception is not None:
                     self._update_perception()
+                if self.use_gello and self.use_residual_policy:
+                    self._update_teleop_command()
             except:
                 print(f"Error in update_real_state")
                 break
@@ -378,11 +522,7 @@ class RobotTeleopEnv(mp.Process):
 
     def run(self) -> None:
         if self.use_robot:
-            if self.use_gello:
-                teleop = GelloTeleop(bimanual=self.bimanual)
-            else:
-                teleop = KeyboardTeleop()
-            teleop.start()
+            self.teleop.start()
         time.sleep(1)
 
         robot_record_dir = root / "log" / self.data_dir / self.exp_name / "robot"
@@ -408,15 +548,20 @@ class RobotTeleopEnv(mp.Process):
                 else:
                     b2w = state["b2w"]
 
-                if teleop.record_start.value == True:
+                if self.teleop.record_start.value == True:
                     self.perception.set_record_start()
-                    teleop.record_start.value = False
+                    self.teleop.record_start.value = False
 
-                if teleop.record_stop.value == True:
+                if self.teleop.record_stop.value == True:
                     self.perception.set_record_stop()
-                    teleop.record_stop.value = False
+                    self.teleop.record_stop.value = False
 
                 idx += 1
+
+                obs = self.get_observations()
+                residual = self.policy(obs)*0 #TODO: set policy output to zero
+                residual[:,-1] = self.gripper_sim2real(residual[:,-1])
+                self.teleop.ee_residual = residual
 
                 # update images from realsense to shared memory
                 perception_out = state.get("perception_out", None)
@@ -559,7 +704,7 @@ class RobotTeleopEnv(mp.Process):
                 break
         
         if self.use_robot:
-            teleop.stop()
+            self.teleop.stop()
         self.stop()
         print("RealEnv process stopped")
 

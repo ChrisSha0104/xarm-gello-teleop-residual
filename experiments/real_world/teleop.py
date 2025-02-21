@@ -18,6 +18,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', type=str, default='')
     parser.add_argument('--bimanual', action='store_true')
+    parser.add_argument('--use_residual_policy', action='store_true')
+    parser.add_argument('--load_model', type=str, default='')
     args = parser.parse_args()
 
     assert args.name != '', "Please provide a name for the experiment"
@@ -31,6 +33,8 @@ if __name__ == '__main__':
         perception_process_func=None,
         use_robot=True,
         use_gello=True,
+        use_residual_policy=args.use_residual_policy,
+        load_model=args.load_model,
         bimanual=args.bimanual,
         gripper_enable=True,
         data_dir="data",
