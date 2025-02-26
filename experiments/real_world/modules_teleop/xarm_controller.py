@@ -477,7 +477,7 @@ class XarmController(mp.Process):
                 if len(commands[0]) > 0:
                     if self.robot_id == 1:
                         print('\t' * 12, end='')
-                    print(f'activated: {self.teleop_activated}, commands: {[np.round(c, 4) for c in commands[0]]}')
+                    # print(f'activated: {self.teleop_activated}, commands: {[np.round(c, 4) for c in commands[0]]}')
                 # continue  # enable for debug
 
                 with self.exe_lock:

@@ -7,6 +7,7 @@ import copy
 from pynput import keyboard
 from pathlib import Path
 from typing import Tuple, List
+import logging
 
 from modules_teleop.udp_util import udpReceiver, udpSender
 from modules_teleop.common.communication import XARM_STATE_PORT, XARM_CONTROL_PORT, XARM_CONTROL_PORT_L, XARM_CONTROL_PORT_R
@@ -301,8 +302,9 @@ class GelloTeleopResidual(mp.Process):
         # self.shm_manager.start()
         # self.gello_activated = False
 
-        # self.ee_residual = np.zeros((1, 8), dtype=np.float32)
-        self.ee_residual = mp.Array('d', [0.0] * 8)
+        # self.ee_residual = mp.Array('d', [0.0] * 8)
+        self.joint_residual = mp.Array('d', [0.0] * 8)
+
 
     @staticmethod
     def log(msg):
@@ -357,7 +359,7 @@ class GelloTeleopResidual(mp.Process):
     def get_command(self):
         # if self.cur_joints is None:
         #     return
-        
+
         if self.key_states["p"]:
             # abandon all other keyinputs
             self.pause = not self.pause
@@ -410,7 +412,7 @@ class GelloTeleopResidual(mp.Process):
             # print('command_joints:', command_joints)
             next_joints = command_joints.tolist()
             # print('next_joints:', next_joints)
-            self.command = [next_joints]
+            self.command[:] = next_joints
             return
 
     def run(self) -> None:
@@ -441,13 +443,15 @@ class GelloTeleopResidual(mp.Process):
             try:
                 # command_start_time = time.time()
                 self.get_command()
-                self.command += 0*self.ee_residual #TODO: guaranteee output zero
+                # logging.critical(f"command: {list(self.command)}")
+                # print(f"command: {list(self.command)}")
+                self.command[:] += 0*self.joint_residual[:] #TODO: guaranteee output zero
 
                 if self.bimanual:
                     self.command_sender_left.send([self.command[0][0:8]])
                     self.command_sender_right.send([self.command[0][8:16]])
                 else:
-                    self.command_sender.send(self.command)
+                    self.command_sender.send([list(self.command)])
                 # time.sleep(max(0, COMMAND_CHECK_INTERVAL / 2 - (time.time() - command_start_time)))
             except:
                 print(f"Error in GelloTeleop")

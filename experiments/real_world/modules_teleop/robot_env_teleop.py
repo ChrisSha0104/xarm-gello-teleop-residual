@@ -11,6 +11,8 @@ import pickle
 import transforms3d
 import subprocess
 import torch
+import math
+import logging
 
 from .encoded_actor_critic import ActorCriticVisual
 from pynput import keyboard
@@ -23,6 +25,7 @@ root: Path = get_root(__file__)
 from modules_teleop.perception import Perception
 from modules_teleop.xarm_controller import XarmController
 from modules_teleop.teleop_keyboard import KeyboardTeleop
+from modules_teleop.kinematics_utils import KinHelper
 from gello.teleop_gello import GelloTeleop
 from gello.teleop_gello_residual import GelloTeleopResidual
 from camera.multi_realsense import MultiRealsense
@@ -110,49 +113,45 @@ class RobotTeleopEnv(mp.Process):
         self.realsense.set_white_balance(3800)
 
         # base calibration
-        self.calibrate_result_dir = calibrate_result_dir
-        with open(f'{self.calibrate_result_dir}/base.pkl', 'rb') as f:
-            base = pickle.load(f)
-        if self.bimanual:
-            R_leftbase2board = base['R_leftbase2world']
-            t_leftbase2board = base['t_leftbase2world']
-            R_rightbase2board = base['R_rightbase2world']
-            t_rightbase2board = base['t_rightbase2world']
-            leftbase2world_mat = np.eye(4)
-            leftbase2world_mat[:3, :3] = R_leftbase2board
-            leftbase2world_mat[:3, 3] = t_leftbase2board
-            self.state["b2w_l"] = leftbase2world_mat
-            rightbase2world_mat = np.eye(4)
-            rightbase2world_mat[:3, :3] = R_rightbase2board
-            rightbase2world_mat[:3, 3] = t_rightbase2board
-            self.state["b2w_r"] = rightbase2world_mat
-        else:
-            R_base2board = base['R_base2world']
-            t_base2board = base['t_base2world']
-            base2world_mat = np.eye(4)
-            base2world_mat[:3, :3] = R_base2board
-            base2world_mat[:3, 3] = t_base2board
-            self.state["b2w"] = base2world_mat
+        # self.calibrate_result_dir = calibrate_result_dir
+        # with open(f'{self.calibrate_result_dir}/base.pkl', 'rb') as f:
+        #     base = pickle.load(f)
+        # if self.bimanual:
+        #     R_leftbase2board = base['R_leftbase2world']
+        #     t_leftbase2board = base['t_leftbase2world']
+        #     R_rightbase2board = base['R_rightbase2world']
+        #     t_rightbase2board = base['t_rightbase2world']
+        #     leftbase2world_mat = np.eye(4)
+        #     leftbase2world_mat[:3, :3] = R_leftbase2board
+        #     leftbase2world_mat[:3, 3] = t_leftbase2board
+        #     self.state["b2w_l"] = leftbase2world_mat
+        #     rightbase2world_mat = np.eye(4)
+        #     rightbase2world_mat[:3, :3] = R_rightbase2board
+        #     rightbase2world_mat[:3, 3] = t_rightbase2board
+        #     self.state["b2w_r"] = rightbase2world_mat
+        # else:
+        base2world_mat = np.eye(4)
+        self.state["b2w"] = base2world_mat
 
-        # camera calibration
-        extr_list = []
-        with open(f'{self.calibrate_result_dir}/rvecs.pkl', 'rb') as f:
-            rvecs = pickle.load(f)
-        with open(f'{self.calibrate_result_dir}/tvecs.pkl', 'rb') as f:
-            tvecs = pickle.load(f)
-        for i in range(len(self.serial_numbers)):
-            device = self.serial_numbers[i]
-            R_world2cam = cv2.Rodrigues(rvecs[device])[0]
-            t_world2cam = tvecs[device][:, 0]
-            extr_mat = np.eye(4)
-            extr_mat[:3, :3] = R_world2cam
-            extr_mat[:3, 3] = t_world2cam
-            extr_list.append(extr_mat)
-        self.state["extr"] = np.stack(extr_list)
+        # # camera calibration
+        # extr_list = []
+        # with open(f'{self.calibrate_result_dir}/rvecs.pkl', 'rb') as f:
+        #     rvecs = pickle.load(f)
+        # with open(f'{self.calibrate_result_dir}/tvecs.pkl', 'rb') as f:
+        #     tvecs = pickle.load(f)
+        # for i in range(len(self.serial_numbers)):
+        #     device = self.serial_numbers[i]
+        #     R_world2cam = cv2.Rodrigues(rvecs[device])[0]
+        #     t_world2cam = tvecs[device][:, 0]
+        #     extr_mat = np.eye(4)
+        #     extr_mat[:3, :3] = R_world2cam
+        #     extr_mat[:3, 3] = t_world2cam
+        #     extr_list.append(extr_mat)
+        # self.state["extr"] = np.stack(extr_list)
 
         # save calibration
-        mkdir(root / "log" / self.data_dir / self.exp_name / "calibration", overwrite=False, resume=False)
-        subprocess.run(f'cp -r {self.calibrate_result_dir}/* {str(root)}/log/{self.data_dir}/{self.exp_name}/calibration', shell=True)
+        # mkdir(root / "log" / self.data_dir / self.exp_name / "calibration", overwrite=False, resume=False)
+        # subprocess.run(f'cp -r {self.calibrate_result_dir}/* {str(root)}/log/{self.data_dir}/{self.exp_name}/calibration', shell=True)
 
         # Perception setup
         if perception is not None:
@@ -219,7 +218,7 @@ class RobotTeleopEnv(mp.Process):
                     ip=bimanual_robot_ip[0],
                     gripper_enable=gripper_enable,
                     mode=mode,
-                    command_mode='cartesian',
+                    command_mode='joints' if use_gello else 'cartesian',
                     robot_id=0,
                     verbose=False,
                 )
@@ -228,7 +227,7 @@ class RobotTeleopEnv(mp.Process):
                     ip=bimanual_robot_ip[1],
                     gripper_enable=gripper_enable,
                     mode=mode,
-                    command_mode='cartesian',
+                    command_mode='joints' if use_gello else 'cartesian',
                     robot_id=1,
                     verbose=False,
                 )
@@ -239,7 +238,7 @@ class RobotTeleopEnv(mp.Process):
                     ip=robot_ip,
                     gripper_enable=gripper_enable,
                     mode=mode,
-                    command_mode='cartesian',
+                    command_mode='joints' if use_gello else 'cartesian',
                     robot_id=-1,
                     verbose=False,
                 )
@@ -280,9 +279,10 @@ class RobotTeleopEnv(mp.Process):
         self.model_path = load_model
         self.prev_time = 0
         self.update_flag = False
+        self.kin_helper = KinHelper(robot_name='xarm7')
 
         if self.use_residual_policy:
-            self.actor_critic = ActorCriticVisual(184,192,8) #TODO: hardcoded input dim
+            self.actor_critic = ActorCriticVisual(7*8+120*120,8*8+120*120,8) #TODO: hardcoded input dim
             self.policy = self.get_policy(self.actor_critic, self.model_path)
             assert(use_gello, "Residual policy requires gello")
             print("Residual policy loaded")
@@ -290,59 +290,30 @@ class RobotTeleopEnv(mp.Process):
             self.visual_obs = np.zeros((120*120), dtype=np.float32)
             self.teleop_states_obs = np.zeros((8*4), dtype=np.float32)
             self.robot_states_obs = np.zeros((8*3), dtype=np.float32)
-        
-        if self.use_robot:
+            self.teleop_command = mp.Array('d', [0.0]*8)
+
             if self.use_gello and not self.use_residual_policy:
                 self.teleop = GelloTeleop(bimanual=self.bimanual)
-            if self.use_gello and self.use_residual_policy:
-                self.teleop = GelloTeleopResidual(bimanual=self.bimanual, policy=self.policy)
+            elif self.use_gello and self.use_residual_policy:
+                self.teleop = GelloTeleopResidual(bimanual=self.bimanual)
             else:
                 self.teleop = KeyboardTeleop()
 
-    def get_policy(self, actor_critic: ActorCriticVisual, model_path: str) -> Callable: #TODO: add empirical normalizatiopn
-        model = torch.load(model_path)
-        actor_critic.load_state_dict(model['model_state_dict'])
+    def get_policy(self, actor_critic, model_path) -> Callable: #TODO: add empirical normalizatiopn
+        checkpoint = torch.load(model_path)
+        actor_critic.load_state_dict(checkpoint['model_state_dict'])
         policy = actor_critic.act_inference
         return policy
     
     def get_observations(self):
-        obs = np.concatenate([self.visual_obs, self.teleop_states_obs, self.robot_states_obs], axis=1)
+        raw_depth = self.state["perception_out"]["value"][0]["depth"] # 480*848
+        cropped_depth = cv2.resize(raw_depth, (120, 120)).flatten()
+        self.visual_obs = self.normalize_depth_01(cropped_depth)
+        obs = np.concatenate([self.visual_obs, self.teleop_states_obs, self.robot_states_obs], dtype=np.float32)
+        print("teleop obs: ", self.teleop_states_obs[:8])
+        print("robot obs: ", self.robot_states_obs[:8])
+        obs = torch.tensor(obs.reshape(1,-1), dtype=torch.float32)
         return obs
-
-    def gripper_sim2real(self, sim_gripper_status: float) -> float:
-        """
-        Maps the simulator's gripper status (0.0 open, 0.84 closed) back to the real robot's gripper status (800 open, 0 closed)
-        using the inverse of a quadratic function.
-
-        Args:
-            sim_gripper_status (float): Gripper status from the simulator (range: 0.0 to 0.84).
-
-        Returns:
-            float: Mapped gripper status for the real robot (range: 800 to 0).
-        """
-        a, b, c = -1.3522e-6, 3.1781e-5, 0.84
-        c_prime = c - sim_gripper_status  # Adjusted constant term
-        
-        # Compute the discriminant
-        discriminant = b**2 - 4 * a * c_prime
-        if discriminant < 0:
-            raise ValueError("No real solution exists for the given simulator gripper status.")
-
-        # Compute the two possible solutions
-        sqrt_discriminant = math.sqrt(discriminant)
-        s1 = (-b + sqrt_discriminant) / (2 * a)
-        s2 = (-b - sqrt_discriminant) / (2 * a)
-
-        # Choose the valid solution within the real gripper range [0, 800]
-        if 0 <= s1 <= 800:
-            return s1
-        elif 0 <= s2 <= 800:
-            return s2
-        else:
-            raise ValueError("No valid real gripper status found within range [0, 800].")
-
-    def mp2np(self, mp_array: mp.Array) -> np.array:
-        return np.frombuffer(mp_array.get_obj())  
 
     def real_start(self, start_time) -> None:
         self._real_alive.value = True
@@ -364,6 +335,9 @@ class RobotTeleopEnv(mp.Process):
                 self.right_xarm_controller.start()
             else:
                 self.xarm_controller.start()
+
+        if self.use_gello:
+            self.teleop.start()
         
         while not self.real_alive:
             self._real_alive.value = True
@@ -393,6 +367,9 @@ class RobotTeleopEnv(mp.Process):
             self.perception.stop()
         self.realsense.stop(wait=False)
 
+        if self.use_gello:
+            self.teleop.stop()
+
         self.image_display_thread.join()
         self.update_real_state_t.join()
         print("real env stopped")
@@ -420,10 +397,15 @@ class RobotTeleopEnv(mp.Process):
         return
 
     def _update_teleop_command(self) -> None:
-        if self.teleop.alive.value:
+        if self.xarm_controller.is_controller_alive:
+            if all(value == 0.0 for value in self.teleop_command):
+                teleop_command_ee = np.zeros(8)
+            else:
+                teleop_command_np = np.frombuffer(self.teleop_command.get_obj(), dtype=np.float64)
+                teleop_command_ee = self.fk(teleop_command_np)
             self.state["teleop_command"] = {
                 "time": time.time(),
-                "value": self.mp2np(self.teleop.command[:])
+                "value": teleop_command_ee
             }
             if self.update_flag == True:
                 self._update_teleop_states_obs()
@@ -457,7 +439,6 @@ class RobotTeleopEnv(mp.Process):
                         "time": time.time(),
                         "value": self.xarm_controller.cur_gripper_q.get()
                     }
-
                 if self.use_residual_policy:
                     if (time.time() - self.prev_time) > 0.01: 
                         self._update_robot_states_obs()
@@ -465,18 +446,21 @@ class RobotTeleopEnv(mp.Process):
                         self.update_flag = True
         return
 
-    def _update_robot_states_obs(self) -> None:
-        self.robot_states_obs = np.roll(self.robot_states_obs, shift=8, axis=1)
-        self.robot_states_obs[:7] = self.state['robot_out']['value'][:7] 
-        gripper_obs = self.gripper_sim2real(self.state['robot_out']['value'][-1]) 
+    def _update_robot_states_obs(self) -> None: #TODO debug
+        self.robot_states_obs = np.roll(self.robot_states_obs, shift=8, axis=0)
+        self.robot_states_obs[:3] = self.state['robot_out']['value'][3,:3]
+        self.robot_states_obs[3:7] = self.quat_from_matrix_np(self.state['robot_out']['value'][:3,:3]) 
+        gripper_obs = self.gripper_real2sim(self.state['gripper_out']['value']) 
         self.robot_states_obs[7] = gripper_obs
+        # print("most recent robot obs: ", self.robot_states_obs[:8])
         
 
     def _update_teleop_states_obs(self) -> None: 
-        self.teleop_states_obs = np.roll(self.teleop_states_obs, shift=8, axis=1)
+        self.teleop_states_obs = np.roll(self.teleop_states_obs, shift=8, axis=0)
         self.teleop_states_obs[:7] = self.state['teleop_command']['value'][:7]
-        gripper_obs = self.gripper_sim2real(self.state['teleop_command']['value'][-1]) 
-        self.robot_states_obs[7] = gripper_obs
+        gripper_obs = self.gripper_real2sim(self.state['teleop_command']['value'][-1]) 
+        self.teleop_states_obs[7] = gripper_obs
+        # print("most recent teleop obs: ",self.teleop_states_obs[:8])
 
     def update_real_state(self) -> None:
         while self.real_alive:
@@ -521,8 +505,14 @@ class RobotTeleopEnv(mp.Process):
         self.image_display_thread.start()
 
     def run(self) -> None:
-        if self.use_robot:
-            self.teleop.start()
+        # if self.use_robot:
+            # if self.use_gello and not self.use_residual_policy:
+            #     teleop = GelloTeleop(bimanual=self.bimanual)
+            # elif self.use_gello and self.use_residual_policy:
+            #     teleop = GelloTeleopResidual(bimanual=self.bimanual)
+            # else:
+            #     teleop = KeyboardTeleop()
+            # self.teleop.start()
         time.sleep(1)
 
         robot_record_dir = root / "log" / self.data_dir / self.exp_name / "robot"
@@ -558,10 +548,18 @@ class RobotTeleopEnv(mp.Process):
 
                 idx += 1
 
-                obs = self.get_observations()
-                residual = self.policy(obs)*0 #TODO: set policy output to zero
-                residual[:,-1] = self.gripper_sim2real(residual[:,-1])
-                self.teleop.ee_residual = residual
+                self.teleop_command[:] = list(self.teleop.command)
+
+                if self.use_gello and self.use_residual_policy:
+                    if not all(value == 0.0 for value in self.teleop_command):
+                        obs = self.get_observations()
+                        residual = self.policy(obs) # torch tensor (1, 8)
+                        print("ee residual: ", residual)
+                        ee_goal = self.teleop_states_obs[:8] + residual.detach().numpy() # np array [1,8]
+                        qpos_arm_goal = self.ik(np.array(self.teleop_command[:7]), ee_goal) # np array (7,)=
+                        qpos_goal = np.append(qpos_arm_goal, (self.teleop_command[-1]+ee_goal[0,-1])) # np array (8,)
+                        print("joint residual", qpos_goal - self.teleop_command[:])
+                        self.teleop.joint_residual[:] = np.zeros(8,)#0*#(qpos_goal - self.teleop_command[:]) # np array (8,)
 
                 # update images from realsense to shared memory
                 perception_out = state.get("perception_out", None)
@@ -576,14 +574,18 @@ class RobotTeleopEnv(mp.Process):
                         intr = intrinsics[k]
 
                         l = 0.1
-                        origin = state["extr"][k] @ np.array([0, 0, 0, 1])
-                        x_axis = state["extr"][k] @ np.array([l, 0, 0, 1])
-                        y_axis = state["extr"][k] @ np.array([0, l, 0, 1])
-                        z_axis = state["extr"][k] @ np.array([0, 0, l, 1])
-                        origin = origin[:3] / origin[2]
-                        x_axis = x_axis[:3] / x_axis[2]
-                        y_axis = y_axis[:3] / y_axis[2]
-                        z_axis = z_axis[:3] / z_axis[2]
+                        origin = np.ones((3,4)) @ np.array([0, 0, 0, 1])
+                        x_axis = np.ones((3,4)) @ np.array([l, 0, 0, 1])
+                        y_axis = np.ones((3,4)) @ np.array([0, l, 0, 1])
+                        z_axis = np.ones((3,4)) @ np.array([0, 0, l, 1])
+                        if origin[2] != 0:
+                            origin = origin[:3] / origin[2]  # Shape (3,1)
+                        if x_axis[2] != 0:
+                            x_axis = x_axis[:3] / x_axis[2]
+                        if y_axis[2] != 0:
+                            y_axis = y_axis[:3] / y_axis[2]
+                        if z_axis[2] != 0:
+                            z_axis = z_axis[:3] / z_axis[2]
                         origin = intr @ origin
                         x_axis = intr @ x_axis
                         y_axis = intr @ y_axis
@@ -640,7 +642,7 @@ class RobotTeleopEnv(mp.Process):
                                 eef_points_world_vis = np.concatenate(eef_points_world_vis, axis=0)
                                 eef_points_world_vis = np.concatenate([eef_points_world_vis, np.ones((eef_points_world_vis.shape[0], 1))], axis=1)  # (n, 4)
                                 eef_colors = eef_colors * eef_points_world_vis.shape[0]
-                                
+                            
                                 if self.bimanual:
                                     for point_orig, point, color, val, b2w in zip(eef_points_vis, eef_points_world_vis, eef_colors, ["left_value", "right_value"], [b2w_l, b2w_r]):
                                         e2b = robot_out[val]  # (4, 4)
@@ -665,7 +667,7 @@ class RobotTeleopEnv(mp.Process):
                                     point = eef_points_world_vis[0]
                                     color = eef_colors[0]
                                     e2b = robot_out["value"]  # (4, 4)
-                                    point = state["extr"][k] @ point
+                                    point = np.eye(4) @ point
                                     point = point[:3] / point[2]
                                     point = intr @ point
                                     cv2.circle(rgbs[k], (int(point[0]), int(point[1])), 2, color, -1)
@@ -674,7 +676,7 @@ class RobotTeleopEnv(mp.Process):
                                     for axis, color in zip(eef_axis, eef_axis_colors):
                                         eef_point_axis = point_orig + 0.1 * axis
                                         eef_point_axis_world = (b2w @ e2b @ eef_point_axis).T
-                                        eef_point_axis_world = state["extr"][k] @ eef_point_axis_world
+                                        eef_point_axis_world = np.eye(4) @ eef_point_axis_world
                                         eef_point_axis_world = eef_point_axis_world[:3] / eef_point_axis_world[2]
                                         eef_point_axis_world = intr @ eef_point_axis_world
                                         cv2.line(rgbs[k], 
@@ -699,14 +701,144 @@ class RobotTeleopEnv(mp.Process):
 
                 time.sleep(max(0, 1 / fps - (time.time() - tic)))
             
-            except:
-                print(f"Error in robot teleop env")
+            except BaseException as e:
+                print(f"Error in robot teleop env: {e.with_traceback()}")
                 break
         
-        if self.use_robot:
-            self.teleop.stop()
+        # if self.use_robot:
+        #     self.teleop.stop()
         self.stop()
         print("RealEnv process stopped")
+
+    def euler_from_quat_np(self, quat: np.ndarray) -> np.ndarray:
+        """
+        Convert a quaternion (w, x, y, z) to Euler angles (roll, pitch, yaw) in ZYX order.
+
+        Args:
+            quat (np.ndarray): Quaternion in (w, x, y, z) format.
+
+        Returns:
+            np.ndarray: Euler angles in (roll, pitch, yaw) format (radians).
+        """
+        if quat.shape != (4,):
+            raise ValueError(f"Invalid quaternion shape {quat.shape}. Expected (4,).")
+
+        w, x, y, z = quat
+
+        # Compute roll (φ)
+        roll = np.arctan2(2 * (w * x + y * z), 1 - 2 * (x**2 + y**2))
+
+        # Compute pitch (θ)
+        sinp = 2 * (w * y - z * x)
+        if abs(sinp) >= 1:
+            pitch = np.sign(sinp) * (np.pi / 2)  # Use 90 degrees if out of range
+        else:
+            pitch = np.arcsin(sinp)
+
+        # Compute yaw (ψ)
+        yaw = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y**2 + z**2))
+
+        return np.array([[roll, pitch, yaw]])  # (φ, θ, ψ)
+
+    def quat_from_matrix_np(self, matrix: np.ndarray) -> np.ndarray:
+        """
+        Convert a 3×3 rotation matrix to a quaternion (w, x, y, z) using NumPy.
+
+        Args:
+            matrix (np.ndarray): A 3×3 rotation matrix.
+
+        Returns:
+            np.ndarray: Quaternion in (w, x, y, z) format.
+        """
+        if matrix.shape != (3, 3):
+            raise ValueError(f"Invalid rotation matrix shape {matrix.shape}. Expected (3, 3).")
+
+        m00, m01, m02 = matrix[0, 0], matrix[0, 1], matrix[0, 2]
+        m10, m11, m12 = matrix[1, 0], matrix[1, 1], matrix[1, 2]
+        m20, m21, m22 = matrix[2, 0], matrix[2, 1], matrix[2, 2]
+
+        trace = m00 + m11 + m22
+
+        if trace > 0.0:
+            S = np.sqrt(trace + 1.0) * 2  # S = 4 * qw
+            qw = 0.25 * S
+            qx = (m21 - m12) / S
+            qy = (m02 - m20) / S
+            qz = (m10 - m01) / S
+        elif m00 > m11 and m00 > m22:
+            S = np.sqrt(1.0 + m00 - m11 - m22) * 2  # S = 4 * qx
+            qw = (m21 - m12) / S
+            qx = 0.25 * S
+            qy = (m01 + m10) / S
+            qz = (m02 + m20) / S
+        elif m11 > m22:
+            S = np.sqrt(1.0 + m11 - m00 - m22) * 2  # S = 4 * qy
+            qw = (m02 - m20) / S
+            qx = (m01 + m10) / S
+            qy = 0.25 * S
+            qz = (m12 + m21) / S
+        else:
+            S = np.sqrt(1.0 + m22 - m00 - m11) * 2  # S = 4 * qz
+            qw = (m10 - m01) / S
+            qx = (m02 + m20) / S
+            qy = (m12 + m21) / S
+            qz = 0.25 * S
+
+        return np.array([qw, qx, qy, qz])
+    
+    def gripper_sim2real(self, sim_gripper_status: float) -> float:
+        """
+        Maps the simulator's gripper status (0.0 open, 0.84 closed) to the real robot's (800 open, 0 closed)
+        using a quadratic function.
+
+        Args:
+            sim_gripper_status (float): Gripper status from the simulator (range: 0.0 to 0.84).
+
+        Returns:
+            float: Mapped gripper status for the real robot (range: 800 to 0).
+        """
+        a, b, c = -889.36, -205.32, 800
+        return a * sim_gripper_status**2 + b * sim_gripper_status + c
+
+    def gripper_real2sim(self, real_gripper_status: float) -> float:
+        """
+        Maps the real robot's gripper status (800 open, 0 closed) to the simulator's (0.0 open, 0.84 closed)
+        using a quadratic function.
+
+        Args:
+            real_gripper_status (float): Gripper status from the real robot (range: 800 to 0).
+
+        Returns:
+            float: Mapped gripper status for the simulator (range: 0.0 to 0.84).
+        """
+        return (800 - real_gripper_status) / 800
+
+    def mp2np(self, mp_array: mp.Array) -> np.array:
+        return np.frombuffer(mp_array.get_obj())  
+
+    def ik(self, curr_qpos: np.array, ee_goal: np.array) -> np.array:
+        '''
+        ee_goal: shape (1, 8)
+        '''
+        cartesian_goal = np.concatenate([ee_goal[:,:3], self.euler_from_quat_np(ee_goal[:, 3:7].reshape(-1,))])
+        qpos = self.kin_helper.compute_ik_sapien(curr_qpos, cartesian_goal.reshape(-1,))
+        return qpos.reshape(-1,)
+
+    def fk(self, joints: np.array) -> np.array:
+        fk = self.kin_helper.compute_fk_sapien_links(joints[:7], [self.kin_helper.sapien_eef_idx])[0]
+        pos = fk[:3, 3]
+        quat = self.quat_from_matrix_np(fk[:3, :3])
+        gripper_status = joints[-1]
+        return np.concatenate([pos, quat, [gripper_status]])
+
+    def normalize_depth_01(self, depth_input, min_depth=0.0, max_depth=2.0):
+        """Normalize depth to range [0, 1] for CNN input using NumPy."""
+        depth_input = np.nan_to_num(depth_input, nan=0.0).astype(np.float32)  # Replace NaNs with 0.0 and ensure float32 dtype
+        depth_input = depth_input.reshape(depth_input.shape[0], -1)  # Flatten each sample
+        depth_input = np.clip(depth_input, min_depth, max_depth)  # Ensure values are within range
+        depth_input = (depth_input - min_depth) / (max_depth - min_depth)  # Normalize to [0, 1]
+        return depth_input.flatten().astype(np.float32)  # Ensure final dtype is float32
+
 
     def get_intrinsics(self):
         return self.realsense.get_intrinsics()

@@ -272,10 +272,10 @@ class SingleRealsense(mp.Process):
             self.pipeline = pipeline
             self.pipeline_profile = pipeline_profile
 
-            # report global time
-            # https://github.com/IntelRealSense/librealsense/pull/3909
-            d = self.pipeline_profile.get_device().first_color_sensor()
-            d.set_option(rs.option.global_time_enabled, 1)
+            # # report global time
+            # # https://github.com/IntelRealSense/librealsense/pull/3909
+            # d = self.pipeline_profile.get_device().first_color_sensor()
+            # d.set_option(rs.option.global_time_enabled, 1)
 
             # setup advanced mode
             if self.advanced_mode_config is not None:
@@ -424,15 +424,15 @@ class SingleRealsense(mp.Process):
                     for key, value in commands.items():
                         command[key] = value[i]
                     cmd = command['cmd']
-                    if cmd == Command.SET_COLOR_OPTION.value:
-                        sensor = self.pipeline_profile.get_device().first_color_sensor()
-                        option = rs.option(command['option_enum'])
-                        value = float(command['option_value'])
-                        sensor.set_option(option, value)
+                    # if cmd == Command.SET_COLOR_OPTION.value:
+                    #     sensor = self.pipeline_profile.get_device().first_color_sensor()
+                    #     option = rs.option(command['option_enum'])
+                    #     value = float(command['option_value'])
+                    #     sensor.set_option(option, value)
                         # print('auto', sensor.get_option(rs.option.enable_auto_exposure))
                         # print('exposure', sensor.get_option(rs.option.exposure))
                         # print('gain', sensor.get_option(rs.option.gain))
-                    elif cmd == Command.SET_DEPTH_OPTION.value:
+                    if cmd == Command.SET_DEPTH_OPTION.value:
                         sensor = self.pipeline_profile.get_device().first_depth_sensor().set_option(rs.option.inter_cam_sync_mode, 1 if self.is_master else 2)
                         option = rs.option(command['option_enum'])
                         value = float(command['option_value'])

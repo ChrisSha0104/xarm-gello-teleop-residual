@@ -8,11 +8,11 @@ import cv2
 from PIL import Image
 
 from segment_anything import SamPredictor, sam_model_registry
-import groundingdino.datasets.transforms as T
-from groundingdino.models import build_model
-from groundingdino.util import box_ops
-from groundingdino.util.slconfig import SLConfig
-from groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
+# import groundingdino.datasets.transforms as T
+# from groundingdino.models import build_model
+# from groundingdino.util import box_ops
+# from groundingdino.util.slconfig import SLConfig
+# from groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
 
 from utils.pcd_utils import visualize_o3d, depth2fgpcd
 from modules.robot_env import get_bounding_box
