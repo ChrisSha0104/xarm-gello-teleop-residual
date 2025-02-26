@@ -288,8 +288,8 @@ class RobotTeleopEnv(mp.Process):
             print("Residual policy loaded")
 
             self.visual_obs = np.zeros((120*120), dtype=np.float32)
-            self.teleop_states_obs = np.zeros((8*4), dtype=np.float32)
-            self.robot_states_obs = np.zeros((8*3), dtype=np.float32)
+            self.teleop_states_obs = np.zeros((8*4), dtype=np.float32) #mp.Array('d', [0.0]*(8*4))
+            self.robot_states_obs = np.zeros((8*3), dtype=np.float32) #mp.Array('d', [0.0]*(8*3))
             self.teleop_command = mp.Array('d', [0.0]*8)
 
             if self.use_gello and not self.use_residual_policy:
@@ -306,12 +306,21 @@ class RobotTeleopEnv(mp.Process):
         return policy
     
     def get_observations(self):
+        # visual obs
         raw_depth = self.state["perception_out"]["value"][0]["depth"] # 480*848
         cropped_depth = cv2.resize(raw_depth, (120, 120)).flatten()
         self.visual_obs = self.normalize_depth_01(cropped_depth)
+
+        # print("robot time", self.state["robot_out"]["time"])
+        # print("teleop time", self.state["teleop_command"]["time"])
+
+        self._update_teleop_states_obs()
+        self._update_robot_states_obs()
+
         obs = np.concatenate([self.visual_obs, self.teleop_states_obs, self.robot_states_obs], dtype=np.float32)
-        print("teleop obs: ", self.teleop_states_obs[:8])
-        print("robot obs: ", self.robot_states_obs[:8])
+        # print("visual obs: ", np.mean(self.visual_obs))
+        # print("teleop obs: ", self.teleop_states_obs[:8])
+        # print("robot obs: ", self.robot_states_obs[:8])
         obs = torch.tensor(obs.reshape(1,-1), dtype=torch.float32)
         return obs
 
@@ -407,9 +416,9 @@ class RobotTeleopEnv(mp.Process):
                 "time": time.time(),
                 "value": teleop_command_ee
             }
-            if self.update_flag == True:
-                self._update_teleop_states_obs()
-                self.update_flag = False
+            # if self.update_flag == True:
+            #     self._update_teleop_states_obs()
+            #     self.update_flag = False
         return
 
     def _update_robot(self) -> None:
@@ -439,11 +448,11 @@ class RobotTeleopEnv(mp.Process):
                         "time": time.time(),
                         "value": self.xarm_controller.cur_gripper_q.get()
                     }
-                if self.use_residual_policy:
-                    if (time.time() - self.prev_time) > 0.01: 
-                        self._update_robot_states_obs()
-                        self.prev_time = time.time()
-                        self.update_flag = True
+                # if self.use_residual_policy:
+                #     if (time.time() - self.prev_time) > 0.01: 
+                #         self._update_robot_states_obs()
+                #         self.prev_time = time.time()
+                #         self.update_flag = True
         return
 
     def _update_robot_states_obs(self) -> None: #TODO debug
@@ -464,7 +473,7 @@ class RobotTeleopEnv(mp.Process):
 
     def update_real_state(self) -> None:
         while self.real_alive:
-            try:
+            try: # NOTE: by design, updates in rotation, i.e., don't need to synchronize time steps
                 if self.use_robot:
                     self._update_robot()
                 if self.perception is not None:
@@ -554,11 +563,11 @@ class RobotTeleopEnv(mp.Process):
                     if not all(value == 0.0 for value in self.teleop_command):
                         obs = self.get_observations()
                         residual = self.policy(obs) # torch tensor (1, 8)
-                        print("ee residual: ", residual)
+                        # print("ee residual: ", residual)
                         ee_goal = self.teleop_states_obs[:8] + residual.detach().numpy() # np array [1,8]
                         qpos_arm_goal = self.ik(np.array(self.teleop_command[:7]), ee_goal) # np array (7,)=
                         qpos_goal = np.append(qpos_arm_goal, (self.teleop_command[-1]+ee_goal[0,-1])) # np array (8,)
-                        print("joint residual", qpos_goal - self.teleop_command[:])
+                        # print("joint residual", qpos_goal - self.teleop_command[:])
                         self.teleop.joint_residual[:] = np.zeros(8,)#0*#(qpos_goal - self.teleop_command[:]) # np array (8,)
 
                 # update images from realsense to shared memory
