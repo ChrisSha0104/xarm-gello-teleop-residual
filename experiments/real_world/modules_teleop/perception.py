@@ -79,6 +79,7 @@ class Perception(mp.Process):
 
         while self.alive.value:
             try: 
+                perception_start_time = time.time()
                 cameras_output = realsense.get(out=cameras_output)
                 get_time = time.time()
                 timestamps = [cameras_output[i]['timestamp'].item() for i in range(self.num_cam)]
@@ -143,7 +144,7 @@ class Perception(mp.Process):
                             cv2.imwrite(f'{record_dir}/camera_{i}/rgb/{recording_frame:06}.jpg', cameras_output[i]['color'])
                             cv2.imwrite(f'{record_dir}/camera_{i}/depth/{recording_frame:06}.png', cameras_output[i]['depth'])
                         recording_frame += 1
-
+                # print(f"perception update freq: {1/(time.time() - perception_start_time)} Hz")
             # except:
             #     print(f"Perception error")
             #     break

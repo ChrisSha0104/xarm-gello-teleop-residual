@@ -115,6 +115,7 @@ class XarmController(mp.Process):
         # self.command_q = mp.Queue()
         self.cur_trans_q = mp.Queue(maxsize=1)
         self.cur_qpos_q = mp.Queue(maxsize=1)
+        self.cur_qvel_q = mp.Queue(maxsize=1)
         self.cur_gripper_q = mp.Queue(maxsize=1)
 
         self.command_receiver = None
@@ -122,6 +123,7 @@ class XarmController(mp.Process):
 
         self.cur_gripper_pos = None
         self.cur_qpos = None
+        self.cur_qvel = None
 
         self.teleop_activated = False
 
@@ -143,7 +145,8 @@ class XarmController(mp.Process):
                     self.cur_gripper_pos = cur_gripper_pos
 
                 cur_qpos = np.array(self._arm.get_servo_angle()[1][0:7]) / 180. * np.pi
-
+                cur_qvel = np.array(self._arm.get_joint_states()[1][1]) / 180. * np.pi 
+                
                 fk_trans_mat = self.kin_helper.compute_fk_sapien_links(cur_qpos, [self.kin_helper.sapien_eef_idx])[0]
                 cur_xyzrpy = np.zeros(6)
                 cur_xyzrpy[:3] = fk_trans_mat[:3, 3] * 1000
@@ -154,12 +157,15 @@ class XarmController(mp.Process):
 
                 # always update the latest position
                 if not self.cur_trans_q.full():
-                    self.cur_trans_q.put(fk_trans_mat)
+                    self.cur_trans_q.put(fk_trans_mat) #NOTE: ee cartesian pose
                 if not self.cur_qpos_q.full():
                     self.cur_qpos_q.put(cur_qpos)
+                if not self.cur_qvel_q.full():
+                    self.cur_qvel_q.put(cur_qvel)
 
                 # self.cur_xyzrpy = cur_xyzrpy
                 self.cur_qpos = cur_qpos
+                self.cur_qvel = cur_qvel
                 # print(f"Get xarm_control data in {time.time() - update_start_time:.6f} seconds")
                 # time.sleep(max(0, self.POSITION_UPDATE_INTERVAL - (time.time() - update_start_time)))
 
@@ -181,6 +187,7 @@ class XarmController(mp.Process):
             # self.command_q.close()
             self.cur_trans_q.close()
             self.cur_qpos_q.close()
+            self.cur_qvel_q.close()
             self.cur_gripper_q.close()
             print("update_cur_position exit!")
 
@@ -197,6 +204,8 @@ class XarmController(mp.Process):
         raise NotImplementedError
         return self.cur_xyzrpy
 
+    def get_current_qvel(self):
+        return copy.deepcopy(self.cur_qvel)
     # ======= xarm controller queue END =======
 
 
@@ -463,9 +472,13 @@ class XarmController(mp.Process):
             duration=COMMAND_CHECK_INTERVAL,
         )
 
+        curr_jpos = []
+        delta_jpos = []
+        new_jpos = []
+
         while self.state.value == ControllerState.RUNNING.value:
             try:
-                start_time = time.time()
+                controller_start_time = time.time()
                 commands = self.command_receiver.get("xarm_control", pop=True)
                 if commands is None or len(commands) == 0:
                     if self.command_mode == 'joints':  # velocity control
@@ -477,7 +490,7 @@ class XarmController(mp.Process):
                 if len(commands[0]) > 0:
                     if self.robot_id == 1:
                         print('\t' * 12, end='')
-                    # print(f'activated: {self.teleop_activated}, commands: {[np.round(c, 4) for c in commands[0]]}')
+                    # print(f'activated: {self.teleop_activated}, commands: {[np.round(c, 4) for c in commands[0]]}') # NOTE: printlog for activating teleop (joint pose)
                 # continue  # enable for debug
 
                 with self.exe_lock:
@@ -497,7 +510,7 @@ class XarmController(mp.Process):
                         if self.command_mode == 'cartesian':
                             self.move(command)
 
-                        if self.command_mode == 'joints':
+                        if self.command_mode == 'joints': # NOTE: using joint pose for xarm control
                             command_state = np.array(command)
 
                             assert len(command_state) == 8, "command state must be 8-dim"
@@ -520,6 +533,7 @@ class XarmController(mp.Process):
                                 next_state = current_state
                             else:
                                 if joint_delta_norm > max_delta_norm:
+                                    print('joint_delta_norm:', joint_delta_norm, 'max_joint_delta:', max_joint_delta)
                                     delta[0:7] = delta[0:7] / joint_delta_norm * max_delta_norm
                                 next_state = current_state + delta
                             
@@ -529,16 +543,30 @@ class XarmController(mp.Process):
                             gripper_pos = next_state[-1]
                             denormalized_gripper_pos = gripper_pos * (GRIPPER_OPEN_MIN - GRIPPER_OPEN_MAX) + GRIPPER_OPEN_MAX
                             next_state[-1] = denormalized_gripper_pos
-                            # next_state = next_state.tolist()
-                            # print('next state:', next_state.tolist())
+
+                            # DEBUG
+                            # print('current state:', current_state.tolist())
+                            # print('delta state:', next_state.tolist())
 
                             self.move_joints(next_state)
 
+                            new_joints = self.get_current_joint()
+                            new_gripper = self.get_current_gripper()
+                            new_gripper = (new_gripper - GRIPPER_OPEN_MAX) / (GRIPPER_OPEN_MIN - GRIPPER_OPEN_MAX)
+                            new_state = np.concatenate([new_joints, np.array([new_gripper])])
+
+                            # print('new state:', new_state.tolist())
+
+                            curr_jpos.append(current_state)
+                            delta_jpos.append(next_state)
+                            new_jpos.append(new_state)
+
                     if command == "quit":
                         break
-                
-                rate.sleep()
+                # rate.sleep()
                 # time.sleep(max(0, self.COMMAND_CHECK_INTERVAL - (time.time() - start_time)))
+                time.sleep(max(0, 1/30 - (time.time() - controller_start_time)))
+                # print(f"controller freq: {1/(time.time()-controller_start_time)} Hz")
             
             except:
                 self.log(f"Error in xarm controller")
@@ -547,6 +575,24 @@ class XarmController(mp.Process):
         self.stop()
         self.command_receiver.stop()
         print("xarm controller stopped")
+
+        with open('curr_jpos.txt', 'w') as f:
+            for arr in curr_jpos:
+                arr_flat = arr.flatten()  # Flatten in case it's multi-dimensional
+                line = ' '.join(map(str, arr_flat))
+                f.write(line + '\n')
+
+        with open('delta_jpos.txt', 'w') as f:
+            for arr in delta_jpos:
+                arr_flat = arr.flatten()
+                line = ' '.join(map(str, arr_flat))
+                f.write(line + '\n')
+        
+        with open('new_jpos.txt', 'w') as f:
+            for arr in new_jpos:
+                arr_flat = arr.flatten()
+                line = ' '.join(map(str, arr_flat))
+                f.write(line + '\n')
 
     # ======= process control =======
     # Only the process created the API class can start and control the robot, init in the `run` function 

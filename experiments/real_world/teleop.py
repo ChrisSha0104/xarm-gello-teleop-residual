@@ -7,7 +7,7 @@ from utils import get_root, mkdir
 root: Path = get_root(__file__)
 sys.path.append(str(root / "real_world"))
 
-from modules_teleop.robot_env_teleop import RobotTeleopEnv
+from experiments.real_world.modules_teleop.robot_env_teleop import RobotTeleopEnv
 
 
 if __name__ == '__main__':

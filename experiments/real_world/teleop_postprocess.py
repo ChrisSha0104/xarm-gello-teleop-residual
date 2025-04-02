@@ -214,9 +214,10 @@ if __name__ == '__main__':
                 # 'teleop_test_rl/traj_4-2': ['1738797492'],
                 # 'teleop_test_rl/traj_4-3': ['1738797559'],
                 # 'teleop_test_rl/test_traj': ['1738809978'],
-                'teleop_test_rl/rel_traj_mode1': ['1739216010'],
-                'teleop_test_rl/rel_traj_mode2': ['1739216080'],
-                'teleop_test_rl/rel_traj_mode3': ['1739216498'],
+                # 'teleop_test_rl/rel_traj_mode1': ['1739216010'],
+                # 'teleop_test_rl/rel_traj_mode2': ['1739216080'],
+                # 'teleop_test_rl/rel_traj_mode3': ['1739216498'],
+                # 'teleop_test_rl/test_cam': ['test']
             }
 
         if ii == 0:

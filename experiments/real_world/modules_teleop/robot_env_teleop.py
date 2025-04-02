@@ -15,9 +15,11 @@ import math
 import logging
 
 from .encoded_actor_critic import ActorCriticVisual
+from .residual_actor_critic_vision import ResidualActorCriticVisual
 from pynput import keyboard
 from pathlib import Path
 from copy import deepcopy
+import matplotlib.pyplot as plt
 
 from utils import get_root, mkdir
 root: Path = get_root(__file__)
@@ -25,7 +27,8 @@ root: Path = get_root(__file__)
 from modules_teleop.perception import Perception
 from modules_teleop.xarm_controller import XarmController
 from modules_teleop.teleop_keyboard import KeyboardTeleop
-from modules_teleop.kinematics_utils import KinHelper
+from modules_teleop.kinematics_utils import *
+from modules_teleop.state_hist_buffer import HistoryBuffer
 from gello.teleop_gello import GelloTeleop
 from gello.teleop_gello_residual import GelloTeleopResidual
 from camera.multi_realsense import MultiRealsense
@@ -259,8 +262,8 @@ class RobotTeleopEnv(mp.Process):
 
         # pygame
         # Initialize a separate Pygame window for image display
-        img_w, img_h = 848, 480
-        col_num = 2
+        img_w, img_h = 480, 480
+        col_num = 1
         self.screen_width, self.screen_height = img_w * col_num, img_h * len(self.realsense.serial_numbers)
         self.image_window = None
 
@@ -282,15 +285,17 @@ class RobotTeleopEnv(mp.Process):
         self.kin_helper = KinHelper(robot_name='xarm7')
 
         if self.use_residual_policy:
-            self.actor_critic = ActorCriticVisual(7*8+120*120,8*8+120*120,8) #TODO: hardcoded input dim
+            # self.actor_critic = ActorCriticVisual(7*8+120*120,8*8+120*120,8) #TODO: hardcoded input dim
+            # self.actor_critic = ResidualActorCriticVisual(22+120*120, 30+120*120, 8)
+            self.actor_critic = ResidualActorCriticVisual(26+120*120, 34+120*120, 10)
             self.policy = self.get_policy(self.actor_critic, self.model_path)
             assert(use_gello, "Residual policy requires gello")
             print("Residual policy loaded")
 
             self.visual_obs = np.zeros((120*120), dtype=np.float32)
-            self.teleop_states_obs = np.zeros((8*4), dtype=np.float32) #mp.Array('d', [0.0]*(8*4))
-            self.robot_states_obs = np.zeros((8*3), dtype=np.float32) #mp.Array('d', [0.0]*(8*3))
-            self.teleop_command = mp.Array('d', [0.0]*8)
+            self.teleop_states_obs = np.zeros((10), dtype=np.float32) # 10D state
+            self.robot_states_obs = np.zeros((16), dtype=np.float32) # 16D state
+            self.teleop_command = mp.Array('d', [0.0]*8) # 8D qpos
 
             if self.use_gello and not self.use_residual_policy:
                 self.teleop = GelloTeleop(bimanual=self.bimanual)
@@ -298,6 +303,20 @@ class RobotTeleopEnv(mp.Process):
                 self.teleop = GelloTeleopResidual(bimanual=self.bimanual)
             else:
                 self.teleop = KeyboardTeleop()
+
+            # SAFETY
+            self.position_lower_bound = np.array([0.15, -0.5, 0.17])
+            self.position_upper_bound = np.array([0.65, 0.5, 0.5])
+            self.alpha = 0.2
+
+            self.init_ee = np.array([0.256, 0.00,  0.399,  1.00,  0.00, 0.00,  0.00, 1.00, 0.00, 0.00]) # init pose in sim
+            self.s2r = matrix_from_quat_np(np.array([0.0, 1.0, 0.0, 0.0]))
+
+            self.robot_state_hist = HistoryBuffer(1, 50, 16) # (num_envs, history_length, state_dim)
+            self.teleop_state_hist = HistoryBuffer(1, 50, 10)
+
+            self.robot_obs_hist = []
+            self.teleop_obs_hist = []
 
     def get_policy(self, actor_critic, model_path) -> Callable: #TODO: add empirical normalizatiopn
         checkpoint = torch.load(model_path)
@@ -307,20 +326,68 @@ class RobotTeleopEnv(mp.Process):
     
     def get_observations(self):
         # visual obs
-        raw_depth = self.state["perception_out"]["value"][0]["depth"] # 480*848
-        cropped_depth = cv2.resize(raw_depth, (120, 120)).flatten()
-        self.visual_obs = self.normalize_depth_01(cropped_depth)
-
-        # print("robot time", self.state["robot_out"]["time"])
-        # print("teleop time", self.state["teleop_command"]["time"])
+        raw_depth = self.state["perception_out"]["value"][0]["depth"].copy()
+        cropped_depth = cv2.resize(raw_depth, (120, 120))
+        self.visual_obs = self.normalize_depth_01(cropped_depth.flatten())
 
         self._update_teleop_states_obs()
         self._update_robot_states_obs()
 
-        obs = np.concatenate([self.visual_obs, self.teleop_states_obs, self.robot_states_obs], dtype=np.float32)
-        # print("visual obs: ", np.mean(self.visual_obs))
-        # print("teleop obs: ", self.teleop_states_obs[:8])
-        # print("robot obs: ", self.robot_states_obs[:8])
+        self.robot_obs_hist.append(self.robot_states_obs)
+        self.teleop_obs_hist.append(self.teleop_states_obs)
+
+        self.robot_state_hist.append(self.robot_states_obs)
+        prev_robot_state = self.robot_state_hist.get_oldest_obs()
+        relative_robot_state = compute_relative_state_np(prev_robot_state.reshape(-1), self.robot_states_obs)
+        
+        print("robot state: ", self.robot_states_obs)
+        print("relative robot state: ", relative_robot_state)
+
+        self.teleop_state_hist.append(self.teleop_states_obs)
+        prev_teleop_state = self.teleop_state_hist.get_oldest_obs()
+        relative_teleop_state = compute_relative_state_np(prev_teleop_state.reshape(-1), self.teleop_states_obs)
+
+        print("teleop state: ", self.teleop_states_obs)
+        print("relative teleop state: ", relative_teleop_state)
+
+        robot_state_min = np.array([-0.1, -0.1, -0.1,  # position
+                                        -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, # orientation 
+                                        -0.5, -0.5, -0.5, # lin vel
+                                        -1.0, -1.0, -1.0, # ang vel
+                                        0.0, # gripper
+                                        ])
+        
+
+        robot_state_max = np.array([0.1, 0.1, 0.1,  # position
+                                        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, # orientation 
+                                        0.5, 0.5, 0.5, # lin vel
+                                        1.0, 1.0, 1.0, # ang vel
+                                        1.0, # gripper
+                                        ])
+        
+        teleop_state_min = np.array([-0.1, -0.1, -0.1,  # position
+                                        -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, # orientation 
+                                        0.0, # gripper
+                                        ])
+        
+
+        teleop_state_max = np.array([0.1, 0.1, 0.1,  # position
+                                        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, # orientation 
+                                        1.0, # gripper
+                                        ])
+
+        standardized_robot_state_obs = (relative_robot_state - robot_state_min) / (robot_state_max - robot_state_min)
+        standardized_teleop_state_obs = (relative_teleop_state - teleop_state_min) / (teleop_state_max - teleop_state_min)
+
+        # np.savetxt('depth.txt', np.round(self.visual_obs.reshape(120,120), 2), fmt="%.2f")
+        # print("robot time", self.state["robot_out"]["time"])
+        # print("teleop time", self.state["teleop_command"]["time"])
+        obs = np.concatenate([standardized_robot_state_obs.reshape(-1,), standardized_teleop_state_obs.reshape(-1,), self.visual_obs], dtype=np.float32)
+
+        # print("visual obs: ", self.visual_obs.mean())
+        print("robot input obs: ", standardized_robot_state_obs.reshape(-1,))
+        print("teleop input obs: ", standardized_teleop_state_obs.reshape(-1,))
+        # print("get observation")
         obs = torch.tensor(obs.reshape(1,-1), dtype=torch.float32)
         return obs
 
@@ -354,9 +421,9 @@ class RobotTeleopEnv(mp.Process):
             time.sleep(0.5)
         
         # get intrinsics
-        intrs = self.get_intrinsics()
-        intrs = np.array(intrs)
-        np.save(root / "log" / self.data_dir / self.exp_name / "calibration" / "intrinsics.npy", intrs)
+        # intrs = self.get_intrinsics()
+        # intrs = np.array(intrs)
+        # np.save(root / "log" / self.data_dir / self.exp_name / "calibration" / "intrinsics.npy", intrs)
         
         print("real env started")
 
@@ -406,19 +473,34 @@ class RobotTeleopEnv(mp.Process):
         return
 
     def _update_teleop_command(self) -> None:
+
+
+        fk = self.state['robot_out']['value']
+
+        self.robot_states_obs[:3] = fk[:3,3]
+        self.robot_states_obs[3:9] = rotation_matrix_to_6d_np(fk[:3,:3]) 
+
+        # TODO: real2sim
+        qpos = self.state['robot_qpos_out']['value']
+        qvel = self.state['robot_qvel_out']['value']
+
+        lin_vel, ang_vel = self.kin_helper.compute_cartesian_vel(qpos, qvel)
+        self.robot_states_obs[9:15] = np.concatenate([lin_vel, ang_vel], axis=0)
+        gripper_obs = self.gripper_real2sim(self.state['gripper_out']['value']) 
+        self.robot_states_obs[-1] = gripper_obs
+
+
         if self.xarm_controller.is_controller_alive:
             if all(value == 0.0 for value in self.teleop_command):
-                teleop_command_ee = np.zeros(8)
+                teleop_comm_ee_10D = np.zeros(10)
             else:
-                teleop_command_np = np.frombuffer(self.teleop_command.get_obj(), dtype=np.float64)
-                teleop_command_ee = self.fk(teleop_command_np)
-            self.state["teleop_command"] = {
+                teleop_jpos_np = np.frombuffer(self.teleop_command.get_obj(), dtype=np.float64) # shape (8,)
+                teleop_comm_ee_8D = self.fk(teleop_jpos_np) # np array (8,)
+                teleop_comm_ee_10D = np.concatenate([teleop_comm_ee_8D[:3], quat_to_6d_np(teleop_comm_ee_8D[3:7]), teleop_comm_ee_8D[-1].reshape(-1)], axis=0) # np array (10,)
+            self.state["teleop_command"] = { # 10D state
                 "time": time.time(),
-                "value": teleop_command_ee
+                "value": teleop_comm_ee_10D # NOTE [pos, 6D orientation, gripper_qpos]
             }
-            # if self.update_flag == True:
-            #     self._update_teleop_states_obs()
-            #     self.update_flag = False
         return
 
     def _update_robot(self) -> None:
@@ -448,38 +530,53 @@ class RobotTeleopEnv(mp.Process):
                         "time": time.time(),
                         "value": self.xarm_controller.cur_gripper_q.get()
                     }
-                # if self.use_residual_policy:
-                #     if (time.time() - self.prev_time) > 0.01: 
-                #         self._update_robot_states_obs()
-                #         self.prev_time = time.time()
-                #         self.update_flag = True
+                if not self.xarm_controller.cur_qvel_q.empty():
+                    self.state["robot_qvel_out"] = {
+                        "time": time.time(),
+                        "value": self.xarm_controller.cur_qvel_q.get() # shape(7,)
+                    }
+                if not self.xarm_controller.cur_qpos_q.empty():
+                    self.state["robot_qpos_out"] = {
+                        "time": time.time(),
+                        "value": self.xarm_controller.cur_qpos_q.get() # shape(7,)
+                    }
         return
 
-    def _update_robot_states_obs(self) -> None: #TODO debug
-        self.robot_states_obs = np.roll(self.robot_states_obs, shift=8, axis=0)
-        self.robot_states_obs[:3] = self.state['robot_out']['value'][3,:3]
-        self.robot_states_obs[3:7] = self.quat_from_matrix_np(self.state['robot_out']['value'][:3,:3]) 
+    def _update_robot_states_obs(self) -> None: 
+        fk = self.state['robot_out']['value']
+
+        self.robot_states_obs[:3] = fk[:3,3]
+        self.robot_states_obs[3:9] = rotation_matrix_to_6d_np(fk[:3,:3]) 
+
+        # TODO: real2sim
+        qpos = self.state['robot_qpos_out']['value']
+        qvel = self.state['robot_qvel_out']['value']
+
+        lin_vel, ang_vel = self.kin_helper.compute_cartesian_vel(qpos, qvel)
+        self.robot_states_obs[9:15] = np.concatenate([lin_vel, ang_vel], axis=0)
         gripper_obs = self.gripper_real2sim(self.state['gripper_out']['value']) 
-        self.robot_states_obs[7] = gripper_obs
-        # print("most recent robot obs: ", self.robot_states_obs[:8])
-        
+        self.robot_states_obs[-1] = gripper_obs
+
+        # print("most recent robot obs: ", self.robot_states_obs)
 
     def _update_teleop_states_obs(self) -> None: 
-        self.teleop_states_obs = np.roll(self.teleop_states_obs, shift=8, axis=0)
-        self.teleop_states_obs[:7] = self.state['teleop_command']['value'][:7]
-        gripper_obs = self.gripper_real2sim(self.state['teleop_command']['value'][-1]) 
-        self.teleop_states_obs[7] = gripper_obs
-        # print("most recent teleop obs: ",self.teleop_states_obs[:8])
+        self.teleop_states_obs = self.state['teleop_command']['value']
 
     def update_real_state(self) -> None:
         while self.real_alive:
             try: # NOTE: by design, updates in rotation, i.e., don't need to synchronize time steps
                 if self.use_robot:
+                    start = time.time()
                     self._update_robot()
+                    # print("robot state obs update freq: ", 1/(time.time()-start))
                 if self.perception is not None:
+                    start = time.time()
                     self._update_perception()
+                    # print("perception obs update freq: ", 1/(time.time()-start))
                 if self.use_gello and self.use_residual_policy:
+                    start = time.time()
                     self._update_teleop_command()
+                    # print("teleop command obs update freq: ", 1/(time.time()-start))
             except:
                 print(f"Error in update_real_state")
                 break
@@ -537,6 +634,7 @@ class RobotTeleopEnv(mp.Process):
 
         fps = self.record_fps if self.record_fps > 0 else self.realsense.capture_fps  # visualization fps
         idx = 0
+
         while self.alive:
             try:
                 tic = time.time()
@@ -560,155 +658,71 @@ class RobotTeleopEnv(mp.Process):
                 self.teleop_command[:] = list(self.teleop.command)
 
                 if self.use_gello and self.use_residual_policy:
-                    if not all(value == 0.0 for value in self.teleop_command):
-                        obs = self.get_observations()
-                        residual = self.policy(obs) # torch tensor (1, 8)
-                        # print("ee residual: ", residual)
-                        ee_goal = self.teleop_states_obs[:8] + residual.detach().numpy() # np array [1,8]
-                        qpos_arm_goal = self.ik(np.array(self.teleop_command[:7]), ee_goal) # np array (7,)=
-                        qpos_goal = np.append(qpos_arm_goal, (self.teleop_command[-1]+ee_goal[0,-1])) # np array (8,)
-                        # print("joint residual", qpos_goal - self.teleop_command[:])
-                        self.teleop.joint_residual[:] = np.zeros(8,)#0*#(qpos_goal - self.teleop_command[:]) # np array (8,)
+                    # if self.xarm_controller.teleop_activated:
+                    #     print("teleop activated")
+                    obs = self.get_observations()
+                    start = time.time()
+                    self.last_residual = self.policy(obs).clone()
+                    curr_residual = self.policy(obs) # torch tensor (1, 8)
+
+                    residual = self.alpha * (0.5 * self.last_residual + 0.5 * curr_residual)
+
+                    # print("residual policy freq: ", 1/(time.time()-start))
+
+                    # print("residual norm: ", torch.norm(residual))
+                    if torch.norm(residual) > 0.5:
+                        print("residual too large, exiting")
+                        exit()
+                    print("ee residual: ", residual.detach().numpy())
+
+                    ee_goal_10D = self.teleop_states_obs + residual.detach().numpy().reshape(-1) # np array (10,)
+                    ee_goal_10D[:3] = np.clip(ee_goal_10D[:3], self.position_lower_bound, self.position_upper_bound)
+
+                    quat = quat_from_6d_np(ee_goal_10D[3:9])
+                    ee_goal_8D = np.concatenate([ee_goal_10D[:3], quat, ee_goal_10D[-1].reshape(-1)], axis=0) # np array (8,)
+
+                    qpos_arm_goal = self.ik(np.array(self.teleop_command[:7]), ee_goal_8D) # np array (7,)
+                    binary_gripper_goal = 0.84 if ((self.teleop_command[-1] + ee_goal_8D[-1]) > 0.5) else 0
+                    qpos_goal = np.append(qpos_arm_goal, binary_gripper_goal) # np array (8,)
+                    # print("joint residual", qpos_goal - self.teleop_command[:])
+                    self.teleop.comm_with_residual[:] = qpos_goal # np array (8,)
+                    # else:
+                    #     self.teleop.comm_with_residual[:] = self.teleop_command[:].copy()
+
+                    if len(self.robot_obs_hist) == 100:
+                        with open("robot_states.txt", "w") as f:
+                            for arr in self.robot_obs_hist:
+                                # Convert the array to a string (you can adjust formatting via parameters)
+                                arr_str = np.array2string(arr, separator=', ')
+                                # Write the string representation followed by a newline
+                                f.write(arr_str + "\n")
+                        with open("teleop_states.txt", "w") as f:
+                            for arr in self.teleop_obs_hist:
+                                # Convert the array to a string (you can adjust formatting via parameters)
+                                arr_str = np.array2string(arr, separator=', ')
+                                # Write the string representation followed by a newline
+                                f.write(arr_str + "\n")
+                        exit()
+                        
 
                 # update images from realsense to shared memory
-                perception_out = state.get("perception_out", None)
-                robot_out = state.get("robot_out", None)
-                gripper_out = state.get("gripper_out", None)
+                raw_depth = self.state["perception_out"]["value"][0]["depth"].copy()  # Make a copy to avoid modifying the original
+                cropped_depth = cv2.resize(raw_depth, (120, 120))
+                clipped_depth = np.clip(cropped_depth/10000, 0, 1)  # Clip depth for better visualization
+                inverted_depth = (clipped_depth.max().item() - clipped_depth)
+                depth_vis = cv2.applyColorMap(
+                    cv2.convertScaleAbs(inverted_depth, alpha=255 / inverted_depth[inverted_depth < 15].max().item()), 
+                    cv2.COLORMAP_JET)
 
-                intrinsics = self.get_intrinsics()
-                if perception_out is not None:
-                    for k, v in perception_out['value'].items():
-                        rgbs[k] = v["color"]
-                        depths[k] = v["depth"]
-                        intr = intrinsics[k]
-
-                        l = 0.1
-                        origin = np.ones((3,4)) @ np.array([0, 0, 0, 1])
-                        x_axis = np.ones((3,4)) @ np.array([l, 0, 0, 1])
-                        y_axis = np.ones((3,4)) @ np.array([0, l, 0, 1])
-                        z_axis = np.ones((3,4)) @ np.array([0, 0, l, 1])
-                        if origin[2] != 0:
-                            origin = origin[:3] / origin[2]  # Shape (3,1)
-                        if x_axis[2] != 0:
-                            x_axis = x_axis[:3] / x_axis[2]
-                        if y_axis[2] != 0:
-                            y_axis = y_axis[:3] / y_axis[2]
-                        if z_axis[2] != 0:
-                            z_axis = z_axis[:3] / z_axis[2]
-                        origin = intr @ origin
-                        x_axis = intr @ x_axis
-                        y_axis = intr @ y_axis
-                        z_axis = intr @ z_axis
-                        cv2.line(rgbs[k], (int(origin[0]), int(origin[1])), (int(x_axis[0]), int(x_axis[1])), (255, 0, 0), 2)
-                        cv2.line(rgbs[k], (int(origin[0]), int(origin[1])), (int(y_axis[0]), int(y_axis[1])), (0, 255, 0), 2)
-                        cv2.line(rgbs[k], (int(origin[0]), int(origin[1])), (int(z_axis[0]), int(z_axis[1])), (0, 0, 255), 2)
-                        if self.use_robot:
-                            eef_points = np.concatenate([self.eef_point, np.ones((self.eef_point.shape[0], 1))], axis=1)  # (n, 4)
-                            eef_colors = [(0, 255, 255)]
-
-                            eef_axis = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]])  # (3, 4)
-                            eef_axis_colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0)]
-
-                            if robot_out is not None:
-                                assert gripper_out is not None
-                                eef_points_world_vis = []
-                                eef_points_vis = []
-                                if self.bimanual:
-                                    left_eef_world_list = []
-                                    right_eef_world_list = []
-                                    for val, b2w, eef_world_list in zip(["left_value", "right_value"], [b2w_l, b2w_r], [left_eef_world_list, right_eef_world_list]):
-                                        e2b = robot_out[val]  # (4, 4)
-                                        eef_points_world = (b2w @ e2b @ eef_points.T).T[:, :3]  # (n, 3)
-                                        eef_points_vis.append(eef_points)
-                                        eef_points_world_vis.append(eef_points_world)
-                                        eef_orientation_world = (b2w[:3, :3] @ e2b[:3, :3] @ eef_axis[:, :3].T).T  # (3, 3)
-                                        eef_world = np.concatenate([eef_points_world, eef_orientation_world], axis=0)  # (n+3, 3)
-                                        eef_world_list.append(eef_world)
-                                    left_eef_world = np.concatenate(left_eef_world_list, axis=0)  # (n+3, 3)
-                                    right_eef_world = np.concatenate(right_eef_world_list, axis=0)  # (n+3, 3)
-                                    eef_world = np.concatenate([left_eef_world, right_eef_world], axis=0)  # (2n+6, 3)
-                                else:
-                                    e2b = robot_out["value"]  # (4, 4)
-                                    eef_points_world = (b2w @ e2b @ eef_points.T).T[:, :3]  # (n, 3)
-                                    eef_points_vis.append(eef_points)
-                                    eef_points_world_vis.append(eef_points_world)
-                                    eef_orientation_world = (b2w[:3, :3] @ e2b[:3, :3] @ eef_axis[:, :3].T).T  # (3, 3)
-                                    eef_world = np.concatenate([eef_points_world, eef_orientation_world], axis=0)  # (n+3, 3)
-                                
-                                # add gripper
-                                if self.bimanual:
-                                    left_gripper = gripper_out["left_value"]
-                                    right_gripper = gripper_out["right_value"]
-                                    gripper_world = np.array([left_gripper, right_gripper, 0.0])[None, :]  # (1, 3)
-                                else:
-                                    gripper = gripper_out["value"]
-                                    gripper_world = np.array([gripper, 0.0, 0.0])[None, :]  # (1, 3)
-
-                                eef_world = np.concatenate([eef_world, gripper_world], axis=0)  # (n+4, 3) or (2n+7, 3)
-                                np.savetxt(robot_record_dir / f"{robot_out['time']:.3f}.txt", eef_world, fmt="%.6f")
-                                
-                                eef_points_vis = np.concatenate(eef_points_vis, axis=0)
-                                eef_points_world_vis = np.concatenate(eef_points_world_vis, axis=0)
-                                eef_points_world_vis = np.concatenate([eef_points_world_vis, np.ones((eef_points_world_vis.shape[0], 1))], axis=1)  # (n, 4)
-                                eef_colors = eef_colors * eef_points_world_vis.shape[0]
-                            
-                                if self.bimanual:
-                                    for point_orig, point, color, val, b2w in zip(eef_points_vis, eef_points_world_vis, eef_colors, ["left_value", "right_value"], [b2w_l, b2w_r]):
-                                        e2b = robot_out[val]  # (4, 4)
-                                        point = state["extr"][k] @ point
-                                        point = point[:3] / point[2]
-                                        point = intr @ point
-                                        cv2.circle(rgbs[k], (int(point[0]), int(point[1])), 2, color, -1)
-                                    
-                                        # draw eef axis
-                                        for axis, color in zip(eef_axis, eef_axis_colors):
-                                            eef_point_axis = point_orig + 0.1 * axis
-                                            eef_point_axis_world = (b2w @ e2b @ eef_point_axis).T
-                                            eef_point_axis_world = state["extr"][k] @ eef_point_axis_world
-                                            eef_point_axis_world = eef_point_axis_world[:3] / eef_point_axis_world[2]
-                                            eef_point_axis_world = intr @ eef_point_axis_world
-                                            cv2.line(rgbs[k], 
-                                                (int(point[0]), int(point[1])), 
-                                                (int(eef_point_axis_world[0]), int(eef_point_axis_world[1])), 
-                                                color, 2)
-                                else:
-                                    point_orig = eef_points_vis[0]
-                                    point = eef_points_world_vis[0]
-                                    color = eef_colors[0]
-                                    e2b = robot_out["value"]  # (4, 4)
-                                    point = np.eye(4) @ point
-                                    point = point[:3] / point[2]
-                                    point = intr @ point
-                                    cv2.circle(rgbs[k], (int(point[0]), int(point[1])), 2, color, -1)
-                                
-                                    # draw eef axis
-                                    for axis, color in zip(eef_axis, eef_axis_colors):
-                                        eef_point_axis = point_orig + 0.1 * axis
-                                        eef_point_axis_world = (b2w @ e2b @ eef_point_axis).T
-                                        eef_point_axis_world = np.eye(4) @ eef_point_axis_world
-                                        eef_point_axis_world = eef_point_axis_world[:3] / eef_point_axis_world[2]
-                                        eef_point_axis_world = intr @ eef_point_axis_world
-                                        cv2.line(rgbs[k], 
-                                            (int(point[0]), int(point[1])), 
-                                            (int(eef_point_axis_world[0]), int(eef_point_axis_world[1])), 
-                                            color, 2)
-
-                row_imgs = []
-                for row in range(len(self.realsense.serial_numbers)):
-                    row_imgs.append(
-                        np.hstack(
-                            (cv2.cvtColor(rgbs[row], cv2.COLOR_BGR2RGB), 
-                            cv2.applyColorMap(cv2.convertScaleAbs(depths[row], alpha=0.03), cv2.COLORMAP_JET))
-                        )
-                    )
-                combined_img = np.vstack(row_imgs)
-                combined_img = cv2.resize(combined_img, (self.screen_width,self.screen_height))
+                # print(self.image_data.get_obj().mean())
+                # # Copy the new depth image into the shared buffer (replace previous display)
                 np.copyto(
                     np.frombuffer(self.image_data.get_obj(), dtype=np.uint8).reshape((self.screen_height, self.screen_width, 3)), 
-                    combined_img
+                    cv2.resize(depth_vis, (self.screen_width, self.screen_height))
                 )
 
                 time.sleep(max(0, 1 / fps - (time.time() - tic)))
+                # print("robot teleop freq: ", 1/(time.time()-tic))
             
             except BaseException as e:
                 print(f"Error in robot teleop env: {e.with_traceback()}")
@@ -718,6 +732,26 @@ class RobotTeleopEnv(mp.Process):
         #     self.teleop.stop()
         self.stop()
         print("RealEnv process stopped")
+
+    def real2sim(self, fk: np.ndarray, s2r: np.ndarray) -> np.ndarray:
+        """
+        Maps the real robot's joint angles to the simulator's joint angles.
+
+        Args:
+            fk (np.ndarray): Joint angles from the real robot.
+
+        Returns:
+            np.ndarray: Mapped joint angles for the simulator.
+        """
+        fk_sim = fk.copy()
+
+        fk_sim[:3,:3] = s2r @ fk_sim[:3,:3]
+        fk_sim[:3,3] = s2r @ fk_sim[:3,3]
+        # fk_sim[0,3] += 0.1
+        # fk_sim[1,3] += 0.12
+        # fk_sim[2,3] += 0.16
+
+        return fk_sim
 
     def euler_from_quat_np(self, quat: np.ndarray) -> np.ndarray:
         """
@@ -747,7 +781,7 @@ class RobotTeleopEnv(mp.Process):
         # Compute yaw (ψ)
         yaw = np.arctan2(2 * (w * z + x * y), 1 - 2 * (y**2 + z**2))
 
-        return np.array([[roll, pitch, yaw]])  # (φ, θ, ψ)
+        return np.array([roll, pitch, yaw])  # (φ, θ, ψ)
 
     def quat_from_matrix_np(self, matrix: np.ndarray) -> np.ndarray:
         """
@@ -815,22 +849,22 @@ class RobotTeleopEnv(mp.Process):
         using a quadratic function.
 
         Args:
-            real_gripper_status (float): Gripper status from the real robot (range: 800 to 0).
+            real_gripper_status (float): Gripper status from the real robot (range: 840 to 0).
 
         Returns:
             float: Mapped gripper status for the simulator (range: 0.0 to 0.84).
         """
-        return (800 - real_gripper_status) / 800
+        return (840 - real_gripper_status) / 840
 
     def mp2np(self, mp_array: mp.Array) -> np.array:
         return np.frombuffer(mp_array.get_obj())  
 
     def ik(self, curr_qpos: np.array, ee_goal: np.array) -> np.array:
         '''
-        ee_goal: shape (1, 8)
+        ee_goal: shape (8, )
         '''
-        cartesian_goal = np.concatenate([ee_goal[:,:3], self.euler_from_quat_np(ee_goal[:, 3:7].reshape(-1,))])
-        qpos = self.kin_helper.compute_ik_sapien(curr_qpos, cartesian_goal.reshape(-1,))
+        cartesian_goal = np.concatenate([ee_goal[:3], self.euler_from_quat_np(ee_goal[3:7])], axis=0)
+        qpos = self.kin_helper.compute_ik_sapien(curr_qpos, cartesian_goal)
         return qpos.reshape(-1,)
 
     def fk(self, joints: np.array) -> np.array:
@@ -840,14 +874,25 @@ class RobotTeleopEnv(mp.Process):
         gripper_status = joints[-1]
         return np.concatenate([pos, quat, [gripper_status]])
 
-    def normalize_depth_01(self, depth_input, min_depth=0.0, max_depth=2.0):
+    def fk_10D(self, joints: np.array, s2r: np.array) -> np.array:
+        fk_sim = self.kin_helper.compute_fk_sapien_links(joints[:7], [self.kin_helper.sapien_eef_idx])[0]
+        pos = s2r @ fk_sim[:3, 3]
+        pos[0] += 0.1
+        pos[1] += 0.12
+        pos[2] += 0.16
+
+        orientation = rotation_matrix_to_6d_np(s2r @ fk_sim[:3, :3])
+        gripper_status = joints[-1] # TODO: add binary gripper status
+        return np.concatenate([pos, orientation, [gripper_status]])
+
+    def normalize_depth_01(self, depth_input, min_depth=0.07, max_depth=0.5):
         """Normalize depth to range [0, 1] for CNN input using NumPy."""
         depth_input = np.nan_to_num(depth_input, nan=0.0).astype(np.float32)  # Replace NaNs with 0.0 and ensure float32 dtype
+        depth_input /= 10000.0  # Convert 0.1mm to meters [ONLY FOR REALSENSE]
         depth_input = depth_input.reshape(depth_input.shape[0], -1)  # Flatten each sample
         depth_input = np.clip(depth_input, min_depth, max_depth)  # Ensure values are within range
         depth_input = (depth_input - min_depth) / (max_depth - min_depth)  # Normalize to [0, 1]
         return depth_input.flatten().astype(np.float32)  # Ensure final dtype is float32
-
 
     def get_intrinsics(self):
         return self.realsense.get_intrinsics()

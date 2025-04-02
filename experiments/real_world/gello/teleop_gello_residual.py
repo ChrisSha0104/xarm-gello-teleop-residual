@@ -21,7 +21,7 @@ from gello.zmq_core.robot_node import ZMQClientRobot
 from gello.agents.gello_agent import DynamixelRobotConfig
 from gello.dynamixel.driver import DynamixelDriver
 
-np.set_printoptions(precision=2, suppress=True)
+np.set_printoptions(precision=5, suppress=True)
 
 
 class GelloListener(mp.Process):
@@ -303,7 +303,7 @@ class GelloTeleopResidual(mp.Process):
         # self.gello_activated = False
 
         # self.ee_residual = mp.Array('d', [0.0] * 8)
-        self.joint_residual = mp.Array('d', [0.0] * 8)
+        self.comm_with_residual = mp.Array('d', [0.0] * 8)
 
 
     @staticmethod
@@ -378,7 +378,7 @@ class GelloTeleopResidual(mp.Process):
 
         if self.pause:
             self.command = []
-            return
+            return False
         else:
             # current_joints = copy.deepcopy(self.cur_joints)
             command_joints = self.gello_listener.get()
@@ -413,7 +413,7 @@ class GelloTeleopResidual(mp.Process):
             next_joints = command_joints.tolist()
             # print('next_joints:', next_joints)
             self.command[:] = next_joints
-            return
+            return True
 
     def run(self) -> None:
         self.gello_listener = GelloListener(
@@ -442,10 +442,20 @@ class GelloTeleopResidual(mp.Process):
         while self.alive:
             try:
                 # command_start_time = time.time()
-                self.get_command()
-                # logging.critical(f"command: {list(self.command)}")
-                # print(f"command: {list(self.command)}")
-                self.command[:] += 0*self.joint_residual[:] #TODO: guaranteee output zero
+                teleop_start_time = time.time()
+                teleop_status = self.get_command()
+                if teleop_status:
+                    # print('command:', self.command[:])
+                    # print(self.joint_residual[:])
+
+                    # goal = np.array(self.command[:], dtype=np.float64) #+ np.array(self.joint_residual[:], dtype=np.float64)
+                    goal = np.array(self.comm_with_residual, dtype=np.float64) # TODO: check frequency
+
+                    # print("goal w/ residual:", goal)
+                    # print("goal w/o residual:", self.command[:])
+
+                    # print("goal:", goal)
+                    self.command[:] = goal  # NOTE: comment this out to disable residual
 
                 if self.bimanual:
                     self.command_sender_left.send([self.command[0][0:8]])
@@ -453,6 +463,7 @@ class GelloTeleopResidual(mp.Process):
                 else:
                     self.command_sender.send([list(self.command)])
                 # time.sleep(max(0, COMMAND_CHECK_INTERVAL / 2 - (time.time() - command_start_time)))
+                # print(f"teleop freq: {1 / (time.time() - teleop_start_time)} Hz")
             except:
                 print(f"Error in GelloTeleop")
                 break
