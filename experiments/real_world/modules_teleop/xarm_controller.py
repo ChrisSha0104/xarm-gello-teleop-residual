@@ -125,7 +125,7 @@ class XarmController(mp.Process):
         self.cur_qpos = None
         self.cur_qvel = None
 
-        self.teleop_activated = False
+        self.teleop_activated = mp.Value('b', False)
 
     # ======= xarm controller queue START =======
     def update_cur_position(self):
@@ -467,7 +467,7 @@ class XarmController(mp.Process):
         print(f"{'='*20} xarm reset! state: {ControllerState(self.state.value)}")
         
         command = None
-        self.teleop_activated = False if self.command_mode == 'joints' else True
+        self.teleop_activated.value = False if self.command_mode == 'joints' else True
         rate = Rate(
             duration=COMMAND_CHECK_INTERVAL,
         )
@@ -490,7 +490,7 @@ class XarmController(mp.Process):
                 if len(commands[0]) > 0:
                     if self.robot_id == 1:
                         print('\t' * 12, end='')
-                    # print(f'activated: {self.teleop_activated}, commands: {[np.round(c, 4) for c in commands[0]]}') # NOTE: printlog for activating teleop (joint pose)
+                    # print(f'activated: {self.teleop_activated.value}, commands: {[np.round(c, 4) for c in commands[0]]}') # NOTE: printlog for activating teleop (joint pose)
                 # continue  # enable for debug
 
                 with self.exe_lock:
@@ -523,13 +523,15 @@ class XarmController(mp.Process):
                             delta = command_state - current_state
                             joint_delta_norm = np.linalg.norm(delta[0:7])
                             max_joint_delta = np.abs(delta[0:7]).max()
-                            # print('teleop activated:', self.teleop_activated, 'command latency:', time.time() - command_timestamp, 'command_state:', command_state, 'current_state:', current_state)
+                            # print('teleop activated:', self.teleop_activated.value, 'command latency:', time.time() - command_timestamp, 'command_state:', command_state, 'current_state:', current_state)
 
-                            max_activate_delta = 0.5
+                            max_activate_delta = 0.1
                             max_delta_norm = 0.10
-                            if not self.teleop_activated:
+                            if not self.teleop_activated.value:
+                                print("command_state:", command_state)
+                                print("current_state:", current_state)
                                 if max_joint_delta < max_activate_delta:
-                                    self.teleop_activated = True
+                                    self.teleop_activated.value = True
                                 next_state = current_state
                             else:
                                 if joint_delta_norm > max_delta_norm:
