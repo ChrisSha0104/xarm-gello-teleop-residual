@@ -540,10 +540,11 @@ class XarmController(mp.Process):
                                     print('joint_delta_norm:', joint_delta_norm, 'max_joint_delta:', max_joint_delta)
                                     delta[0:7] = delta[0:7] / joint_delta_norm * max_delta_norm
                                 next_state = current_state + delta
-                            
-                            if self.teleop_activated.value:
-                                print('goal qpos:', next_state.tolist())
-                                goal_qpos_list.append(next_state.copy())
+
+                            ### ACTUATOR SIM2REAL
+                            # if self.teleop_activated.value:
+                            #     print('goal qpos:', next_state.tolist())
+                            #     goal_qpos_list.append(next_state.copy())
                             next_state[0:7] = next_state[0:7] - current_state[0:7]
                             
                             # denormalize gripper position
@@ -558,10 +559,11 @@ class XarmController(mp.Process):
                             new_gripper = (new_gripper - GRIPPER_OPEN_MAX) / (GRIPPER_OPEN_MIN - GRIPPER_OPEN_MAX)
                             new_state = np.concatenate([new_joints, np.array([new_gripper])])
 
-                            # print('new state:', new_state.tolist())
-                            if self.teleop_activated.value:
-                                actual_qpos_list.append(new_state)
-                                print('actual qpos:', new_state.tolist())
+                            # print('new state:', new_state.tolist())、
+                            ### ACTUATOR SIM2REAL
+                            # if self.teleop_activated.value:
+                            #     actual_qpos_list.append(new_state)
+                            #     print('actual qpos:', new_state.tolist())
 
                     if command == "quit":
                         break
@@ -578,17 +580,18 @@ class XarmController(mp.Process):
         self.command_receiver.stop()
         print("xarm controller stopped")
 
-        with open('actuator_sim2real/goal_qpos_traj.txt', 'w') as f:
-            for arr in goal_qpos_list:
-                arr_flat = arr.flatten()  # Flatten in case it's multi-dimensional
-                line = ' '.join(map(str, arr_flat))
-                f.write(line + '\n')
+        ### ACTUATOR SIM2REAL
+        # with open('actuator_sim2real/goal_qpos_traj.txt', 'w') as f:
+        #     for arr in goal_qpos_list:
+        #         arr_flat = arr.flatten()  # Flatten in case it's multi-dimensional
+        #         line = ' '.join(map(str, arr_flat))
+        #         f.write(line + '\n')
 
-        with open('actuator_sim2real/actual_qpos_traj.txt', 'w') as f:
-            for arr in actual_qpos_list:
-                arr_flat = arr.flatten()
-                line = ' '.join(map(str, arr_flat))
-                f.write(line + '\n')
+        # with open('actuator_sim2real/actual_qpos_traj.txt', 'w') as f:
+        #     for arr in actual_qpos_list:
+        #         arr_flat = arr.flatten()
+        #         line = ' '.join(map(str, arr_flat))
+        #         f.write(line + '\n')
 
     # ======= process control =======
     # Only the process created the API class can start and control the robot, init in the `run` function 

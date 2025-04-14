@@ -90,9 +90,9 @@ class ResidualActorCriticVisual(nn.Module):
         critic_last_layer_bias_const=0.0,
         critic_last_layer_std=1.0,
         critic_last_layer_activation=None,
-        use_visual_encoder=True,
-        visual_idx_actor=[26,26+120*120],
-        visual_idx_critic=[34,34+120*120],
+        use_visual_encoder=False,
+        visual_idx_actor=[20,20+120*120],
+        visual_idx_critic=[28,28+120*120],
         encoder_output_dim=128,
         **kwargs,
     ):
@@ -103,7 +103,7 @@ class ResidualActorCriticVisual(nn.Module):
             )
         super().__init__()
 
-        if num_actor_obs == num_actor_obs:
+        if num_actor_obs == num_critic_obs:
             print("using symmetric actor critic")
         else:
             print("using asymmetric actor critic")
