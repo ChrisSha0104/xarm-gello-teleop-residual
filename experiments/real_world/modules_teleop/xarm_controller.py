@@ -472,9 +472,8 @@ class XarmController(mp.Process):
             duration=COMMAND_CHECK_INTERVAL,
         )
 
-        curr_jpos = []
-        delta_jpos = []
-        new_jpos = []
+        goal_qpos_list = []
+        actual_qpos_list = []
 
         while self.state.value == ControllerState.RUNNING.value:
             try:
@@ -525,7 +524,10 @@ class XarmController(mp.Process):
                             max_joint_delta = np.abs(delta[0:7]).max()
                             # print('teleop activated:', self.teleop_activated.value, 'command latency:', time.time() - command_timestamp, 'command_state:', command_state, 'current_state:', current_state)
 
-                            max_activate_delta = 0.1
+                            # print("command_state:", command_state)
+                            # print("current_state:", current_state)
+
+                            max_activate_delta = 0.1 # NOTE: sensitivity for activating teleop
                             max_delta_norm = 0.10
                             if not self.teleop_activated.value:
                                 print("command_state:", command_state)
@@ -539,16 +541,15 @@ class XarmController(mp.Process):
                                     delta[0:7] = delta[0:7] / joint_delta_norm * max_delta_norm
                                 next_state = current_state + delta
                             
+                            if self.teleop_activated.value:
+                                print('goal qpos:', next_state.tolist())
+                                goal_qpos_list.append(next_state.copy())
                             next_state[0:7] = next_state[0:7] - current_state[0:7]
                             
                             # denormalize gripper position
                             gripper_pos = next_state[-1]
                             denormalized_gripper_pos = gripper_pos * (GRIPPER_OPEN_MIN - GRIPPER_OPEN_MAX) + GRIPPER_OPEN_MAX
                             next_state[-1] = denormalized_gripper_pos
-
-                            # DEBUG
-                            # print('current state:', current_state.tolist())
-                            # print('delta state:', next_state.tolist())
 
                             self.move_joints(next_state)
 
@@ -558,10 +559,9 @@ class XarmController(mp.Process):
                             new_state = np.concatenate([new_joints, np.array([new_gripper])])
 
                             # print('new state:', new_state.tolist())
-
-                            curr_jpos.append(current_state)
-                            delta_jpos.append(next_state)
-                            new_jpos.append(new_state)
+                            if self.teleop_activated.value:
+                                actual_qpos_list.append(new_state)
+                                print('actual qpos:', new_state.tolist())
 
                     if command == "quit":
                         break
@@ -578,20 +578,14 @@ class XarmController(mp.Process):
         self.command_receiver.stop()
         print("xarm controller stopped")
 
-        with open('curr_jpos.txt', 'w') as f:
-            for arr in curr_jpos:
+        with open('actuator_sim2real/goal_qpos_traj.txt', 'w') as f:
+            for arr in goal_qpos_list:
                 arr_flat = arr.flatten()  # Flatten in case it's multi-dimensional
                 line = ' '.join(map(str, arr_flat))
                 f.write(line + '\n')
 
-        with open('delta_jpos.txt', 'w') as f:
-            for arr in delta_jpos:
-                arr_flat = arr.flatten()
-                line = ' '.join(map(str, arr_flat))
-                f.write(line + '\n')
-        
-        with open('new_jpos.txt', 'w') as f:
-            for arr in new_jpos:
+        with open('actuator_sim2real/actual_qpos_traj.txt', 'w') as f:
+            for arr in actual_qpos_list:
                 arr_flat = arr.flatten()
                 line = ' '.join(map(str, arr_flat))
                 f.write(line + '\n')

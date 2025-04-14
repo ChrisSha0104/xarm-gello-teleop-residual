@@ -317,6 +317,7 @@ class RobotTeleopEnv(mp.Process):
 
             self.robot_obs_list = []
             self.teleop_obs_list = []
+            self.qpos_goal_list = []
 
     def get_policy(self, actor_critic, model_path) -> Callable: #TODO: add empirical normalizatiopn
         checkpoint = torch.load(model_path)
@@ -333,21 +334,22 @@ class RobotTeleopEnv(mp.Process):
         self._update_teleop_states_obs()
         self._update_robot_states_obs()
         
-        self.robot_obs_list.append(self.robot_states_obs.copy())
-        self.teleop_obs_list.append(self.teleop_states_obs.copy())
+        # self.qpos_goal_list.append(np.frombuffer(self.teleop_command.get_obj(), dtype=np.float64).copy())
+        # self.robot_obs_list.append(self.robot_states_obs.copy())
+        # self.teleop_obs_list.append(self.teleop_states_obs.copy())
 
         self.robot_state_hist.append(self.robot_states_obs.copy())
         prev_robot_state = self.robot_state_hist.get_oldest_obs()
         relative_robot_state = compute_relative_state_np(prev_robot_state.reshape(-1).copy(), self.robot_states_obs.copy())
 
-        print("robot state: ", self.robot_states_obs)
+        # print("robot state: ", self.robot_states_obs)
         # print("relative robot state: ", relative_robot_state)
 
         self.teleop_state_hist.append(self.teleop_states_obs.copy())
         prev_teleop_state = self.teleop_state_hist.get_oldest_obs()
         relative_teleop_state = compute_relative_state_np(prev_teleop_state.reshape(-1).copy(), self.teleop_states_obs.copy())
 
-        print("teleop state: ", self.teleop_states_obs)
+        # print("teleop state: ", self.teleop_states_obs)
         # print("relative teleop state: ", relative_teleop_state)
 
         robot_state_min = np.array([-0.1, -0.1, -0.1,  # position
@@ -378,6 +380,10 @@ class RobotTeleopEnv(mp.Process):
 
         standardized_robot_state_obs = (relative_robot_state - robot_state_min) / (robot_state_max - robot_state_min)
         standardized_teleop_state_obs = (relative_teleop_state - teleop_state_min) / (teleop_state_max - teleop_state_min)
+
+        self.qpos_goal_list.append(np.frombuffer(self.teleop_command.get_obj(), dtype=np.float64).copy())
+        self.robot_obs_list.append(standardized_robot_state_obs.copy().reshape(-1,))
+        self.teleop_obs_list.append(standardized_teleop_state_obs.copy().reshape(-1,))
 
         # np.savetxt('depth.txt', np.round(self.visual_obs.reshape(120,120), 2), fmt="%.2f")
         # print("robot time", self.state["robot_out"]["time"])
@@ -655,6 +661,7 @@ class RobotTeleopEnv(mp.Process):
                             exit()
                         # print("ee residual: ", residual.detach().numpy())
 
+                        # print("teleop 10D command", self.teleop_states_obs)
                         ee_goal_10D = self.teleop_states_obs + residual.detach().numpy().reshape(-1) # np array (10,)
                         ee_goal_10D[:3] = np.clip(ee_goal_10D[:3], self.position_lower_bound, self.position_upper_bound)
 
@@ -667,7 +674,7 @@ class RobotTeleopEnv(mp.Process):
                         # print("joint residual", qpos_goal - self.teleop_command[:])
                         self.teleop.comm_with_residual[:] = qpos_goal # np array (8,)
 
-                        if len(self.robot_obs_list) == 100:
+                        if len(self.robot_obs_list) == 400:
                             with open("robot_states.txt", "w") as f:
                                 for arr in self.robot_obs_list:
                                     arr_flat = arr.flatten()  # Flatten in case it's multi-dimensional
@@ -678,6 +685,12 @@ class RobotTeleopEnv(mp.Process):
                                     arr_flat = arr.flatten()  # Flatten in case it's multi-dimensional
                                     line = ' '.join(map(str, arr_flat))
                                     f.write(line + '\n')
+                            with open("qpos_goal.txt", "w") as f:
+                                for arr in self.qpos_goal_list:
+                                    arr_flat = arr.flatten()
+                                    line = ' '.join(map(str, arr_flat))
+                                    f.write(line + '\n')
+                            print("-------------------------- FINISHED DATA COLLECTION ---------------------------")
                             exit()
                     else:
                         self.teleop.comm_with_residual[:] = self.teleop_command[:].copy()

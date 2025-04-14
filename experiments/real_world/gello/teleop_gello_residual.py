@@ -455,7 +455,7 @@ class GelloTeleopResidual(mp.Process):
                     # print("goal w/o residual:", self.command[:])
 
                     # print("goal:", goal)
-                    self.command[:] = goal  # NOTE: comment this out to disable residual
+                    # self.command[:] = goal  # NOTE: comment this out to disable residual
 
                 if self.bimanual:
                     self.command_sender_left.send([self.command[0][0:8]])
