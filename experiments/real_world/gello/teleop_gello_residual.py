@@ -304,6 +304,7 @@ class GelloTeleopResidual(mp.Process):
 
         # self.ee_residual = mp.Array('d', [0.0] * 8)
         self.comm_with_residual = mp.Array('d', [0.0] * 8)
+        self.start_residual_policy = mp.Value('b', False)
 
 
     @staticmethod
@@ -367,13 +368,13 @@ class GelloTeleopResidual(mp.Process):
             time.sleep(0.5)
 
         if self.key_states[","]:
-            self.record_start.value = True
-            self.log(f"Record start")
+            self.start_residual_policy.value = True
+            self.log(f" --------------- residual policy started --------------- ")
             time.sleep(0.5)
         
         if self.key_states["."]:
-            self.record_stop.value = True
-            self.log(f"Record stop")
+            self.start_residual_policy.value = False
+            self.log(f" --------------- residual policy paused --------------- ")
             time.sleep(0.5)
 
         if self.pause:
@@ -438,30 +439,33 @@ class GelloTeleopResidual(mp.Process):
 
         time.sleep(1)
         print("Gello teleop start!")
+        use_residual_policy = True
 
         while self.alive:
             try:
                 # command_start_time = time.time()
                 teleop_start_time = time.time()
                 teleop_status = self.get_command()
+                # print("------------------got command------------------")
                 if teleop_status:
                     # print('command:', self.command[:])
-                    # print(self.joint_residual[:])
-
                     # goal = np.array(self.command[:], dtype=np.float64) #+ np.array(self.joint_residual[:], dtype=np.float64)
                     goal = np.array(self.comm_with_residual, dtype=np.float64) # TODO: check frequency
 
-                    # print("goal w/ residual:", goal)
-                    # print("goal w/o residual:", self.command[:])
-                    # print("goal:", goal)
-
+                    # print("command:", self.command[:])
                     # self.command[:] = goal  # NOTE: comment this out to disable residual
 
                 if self.bimanual:
                     self.command_sender_left.send([self.command[0][0:8]])
                     self.command_sender_right.send([self.command[0][8:16]])
                 else:
-                    self.command_sender.send([list(self.command)])
+                    if use_residual_policy:
+                        if teleop_status: # Not yet paused
+                            self.command_sender.send([list(self.comm_with_residual)])
+                        else: # paused
+                            self.command_sender.send([list(self.command)])
+                    else: # regular teleop
+                        self.command_sender.send([list(self.command)])
                 # time.sleep(max(0, COMMAND_CHECK_INTERVAL / 2 - (time.time() - command_start_time)))
                 # print(f"teleop freq: {1 / (time.time() - teleop_start_time)} Hz")
             except:

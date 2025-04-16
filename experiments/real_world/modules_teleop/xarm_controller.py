@@ -527,7 +527,7 @@ class XarmController(mp.Process):
                             # print("command_state:", command_state)
                             # print("current_state:", current_state)
 
-                            max_activate_delta = 0.1 # NOTE: sensitivity for activating teleop
+                            max_activate_delta = 0.5 # NOTE: sensitivity for activating teleop
                             max_delta_norm = 0.10
                             if not self.teleop_activated.value:
                                 print("command_state:", command_state)
@@ -553,6 +553,7 @@ class XarmController(mp.Process):
                             next_state[-1] = denormalized_gripper_pos
 
                             self.move_joints(next_state)
+                            # print("------------------moved joints------------------")
 
                             new_joints = self.get_current_joint()
                             new_gripper = self.get_current_gripper()

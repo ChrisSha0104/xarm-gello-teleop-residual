@@ -29,6 +29,7 @@ from modules_teleop.teleop_keyboard import KeyboardTeleop
 from modules_teleop.kinematics_utils import *
 from modules_teleop.state_hist_buffer import HistoryBuffer
 from modules_teleop.pose_transformations import *
+from modules_teleop.traj_generator import *
 from gello.teleop_gello import GelloTeleop
 from gello.teleop_gello_residual import GelloTeleopResidual
 from camera.multi_realsense import MultiRealsense
@@ -323,6 +324,9 @@ class RobotTeleopEnv(mp.Process):
             self.policy_output_list = []
             self.teleop_base_ee_list = []
 
+            self.sim_teleop_comm_ee_fr_traj = load_from_txt("Sim2Real/sim_traj1/teleop_comm_ee_fr.txt", "torch")
+            self.sim_teleop_comm_base_fr_traj = load_from_txt("Sim2Real/sim_traj1/teleop_comm_base_fr.txt", "torch")
+
     def get_policy(self, actor_critic, model_path) -> Callable: #TODO: add empirical normalizatiopn
         loaded_dict = torch.load(model_path, weights_only=False)
         actor_critic.load_state_dict(loaded_dict['model_state_dict'])
@@ -335,7 +339,7 @@ class RobotTeleopEnv(mp.Process):
         policy = lambda x: actor_critic.act_inference(obs_normalizer(x))
         return policy
     
-    def get_observations(self):
+    def get_observations(self, i=None):
         # visual obs
         # raw_depth = self.state["perception_out"]["value"][0]["depth"].copy()
         # cropped_depth = cv2.resize(raw_depth, (120, 120))
@@ -348,15 +352,19 @@ class RobotTeleopEnv(mp.Process):
         self.robot_state_hist.append(curr_robot_ee_b)
         prev_robot_ee_b = self.robot_state_hist.get_oldest_obs() 
         prev_ee_in_curr_ee_fr = subtract_frame_transforms_10D(curr_robot_ee_b, prev_robot_ee_b) 
-        # print("curr robot ee b: ", curr_robot_ee_b)
+        print("curr robot ee b: ", curr_robot_ee_b)
 
         curr_teleop_comm_b = torch.from_numpy(self.teleop_states_obs.copy()).float().reshape(1, -1)
+        # curr_teleop_comm_b = self.sim_teleop_comm_base_fr_traj[i].clone().reshape(1, -1)
         curr_comm_in_curr_ee_fr = subtract_frame_transforms_10D(curr_robot_ee_b, curr_teleop_comm_b)
-        # print("curr teleop comm b: ", curr_teleop_comm_b)
+        print("curr teleop comm b: ", curr_teleop_comm_b)
+
+        # print("curr teleop comm in curr ee fr: ", curr_comm_in_curr_ee_fr)
 
         cube_7D_b = torch.tensor([[0.35, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]]).float()
         cube_10D_b = ee_7D_to_10D(cube_7D_b)
         cube_pose_in_curr_ee_fr = subtract_frame_transforms_10D(curr_robot_ee_b, cube_10D_b)[:,:9]
+        print("cube pose b: ", cube_10D_b)
 
         robot_state_min = torch.tensor([-0.1, -0.1, -0.1,  # position
                                         -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, # orientation 
@@ -364,7 +372,7 @@ class RobotTeleopEnv(mp.Process):
                                         ]) 
         
 
-        robot_state_max = torch.tensor([0.1, 0.1, 0.1,  # position
+        robot_state_max = torch.tensor([0.1, 0.1, 0.1,  # position 
                                         1.0, 1.0, 1.0, 1.0, 1.0, 1.0, # orientation 
                                         1.0, # gripper
                                         ]) 
@@ -392,7 +400,7 @@ class RobotTeleopEnv(mp.Process):
         normalized_teleop_comm_obs = (curr_comm_in_curr_ee_fr - teleop_comm_min) / (teleop_comm_max - teleop_comm_min)
         normalized_cube_pose_obs = (cube_pose_in_curr_ee_fr - cube_state_min) / (cube_state_max - cube_state_min)        
 
-        self.qpos_goal_list.append(np.frombuffer(self.teleop_command.get_obj(), dtype=np.float64).copy())
+        # self.qpos_goal_list.append(np.frombuffer(self.teleop_command.get_obj(), dtype=np.float64).copy())
         # self.robot_obs_list.append(normalized_robot_state_obs.detach().cpu().numpy().copy().reshape(-1,))
         # self.teleop_obs_list.append(normalized_teleop_comm_obs.detach().cpu().numpy().copy().reshape(-1,))
 
@@ -554,8 +562,7 @@ class RobotTeleopEnv(mp.Process):
         gripper_obs = self.gripper_real2sim(self.state['gripper_out']['value']) 
         self.robot_states_obs[-1] = gripper_obs
 
-        quat = quat_from_matrix_np(fk[:3,:3])
-        self.robot_qpos = np.concatenate([fk[:3,3], quat], axis=0) # np array (8,)
+        self.robot_qpos = self.state["robot_qpos_out"]["value"] # np array (7,)
 
     def _update_teleop_states_obs(self) -> None: 
         self.teleop_states_obs = self.state['teleop_command']['value']
@@ -617,7 +624,6 @@ class RobotTeleopEnv(mp.Process):
             # else:
             #     teleop = KeyboardTeleop()
             # self.teleop.start()
-        time.sleep(1)
 
         robot_record_dir = root / "log" / self.data_dir / self.exp_name / "robot"
         os.makedirs(robot_record_dir, exist_ok=True)
@@ -630,8 +636,13 @@ class RobotTeleopEnv(mp.Process):
             rgbs.append(np.zeros((resolution[1], resolution[0], 3), np.uint8))
             depths.append(np.zeros((resolution[1], resolution[0]), np.uint16))
 
+        time.sleep(1)
+
         fps = self.record_fps if self.record_fps > 0 else self.realsense.capture_fps  # visualization fps
         idx = 0
+        i = 0
+        self.ee_goal = torch.zeros((1,10), dtype=torch.float32)
+        self.last_ee = torch.zeros((1,10), dtype=torch.float32)
 
         while self.alive:
             try:
@@ -654,42 +665,62 @@ class RobotTeleopEnv(mp.Process):
                 idx += 1
 
                 self.teleop_command[:] = list(self.teleop.command)
-                self.ee_goal = torch.zeros((1,10), dtype=torch.float32)
-                self.last_ee = torch.zeros((1,10), dtype=torch.float32)
 
                 if self.use_gello and self.use_residual_policy:
-                    if self.xarm_controller.teleop_activated.value:
-                        curr_robot_ee_b, curr_comm_in_curr_ee_fr, obs = self.get_observations()
-                        self.teleop_base_ee_list.append(curr_comm_in_curr_ee_fr.clone().detach().cpu().numpy().reshape(-1,))
+                    if self.teleop.start_residual_policy.value: #self.xarm_controller.teleop_activated.value:
+                        curr_robot_ee_b, curr_comm_in_curr_ee_fr, obs = self.get_observations(i)
+                        # print("----------------got obs----------------")
+
+                        # self.teleop_base_ee_list.append(curr_comm_in_curr_ee_fr.clone().detach().cpu().numpy().reshape(-1,))
                         start = time.time()
 
-                        self.policy_input_list.append(obs.clone().detach().cpu().numpy().reshape(-1,))
+                        # self.policy_input_list.append(obs.clone().detach().cpu().numpy().reshape(-1,))
 
-                        print("obs: ", obs)
+                        # print("robot state obs: ", obs[:,:10])
+                        # print("teleop state obs: ", obs[:,10:20])
+                        # print("cube state obs: ", obs[:,20:])
                         curr_residual = self.policy(obs) # torch tensor (1, 8)
-                        self.policy_output_list.append(curr_residual.clone().detach().cpu().numpy().reshape(-1,))
+                        # self.policy_output_list.append(curr_residual.clone().detach().cpu().numpy().reshape(-1,))
                         if torch.norm(self.alpha * curr_residual) > 0.5:
                             print("residual too large, exiting")
                             exit()
-                        print("output: ", curr_residual)
-                        print("output_norm: ", torch.norm(curr_residual))
+                        # print("base action: ", curr_comm_in_curr_ee_fr)
+                        # print("residual: ", curr_residual)
+                        # print("output_norm: ", torch.norm(curr_residual))
                         # print("residual: ", self.alpha * curr_residual)
 
-                        self.last_ee = self.ee_goal
+                        self.last_ee = self.ee_goal.clone()
                         goal_in_ee_fr = curr_comm_in_curr_ee_fr + self.alpha * curr_residual.clone()
                         self.ee_goal = combine_frame_transforms_10D(curr_robot_ee_b, goal_in_ee_fr)
+
+                        # print("clean ee goal b", self.ee_goal)
+
+                        if i == 0:
+                            self.last_ee = self.ee_goal.clone()
 
                         ee_goal_filtered = 0.5 * self.ee_goal.clone() + 0.5 * self.last_ee.clone()
                         ee_goal_filtered[:,:3] = torch.clamp(ee_goal_filtered[:,:3], self.robot_position_lower_limits, self.robot_position_upper_limits)
                         ee_goal_filtered[:,-1] = (ee_goal_filtered[:,-1] > 0.5).float()
 
-                        quat = quat_from_6d(ee_goal_filtered[:,3:9])
-                        ee_goal_8D = torch.cat([ee_goal_filtered[:,:3], quat, ee_goal_filtered[:,-1:]], dim=-1).squeeze(0)
-                        ee_goal_8D_np = ee_goal_8D.detach().cpu().numpy() # np array (8,)
+                        print("ee goal filtered: ", ee_goal_filtered)
 
-                        qpos_arm_goal = self.ik(self.robot_qpos, ee_goal_8D_np[:7]) # np array (7,)
-                        qpos_goal = np.append(qpos_arm_goal, ee_goal_8D_np[-1]) # np array (8,)
+                        quat = quat_from_6d(ee_goal_filtered[:,3:9])
+                        r, p, y = euler_xyz_from_quat(quat) # type: ignore
+                        ee_goal_6D = torch.cat([ee_goal_filtered[0,:3], r, p, y], dim=0) # shape (8,)
+                        ee_goal_6D_np = ee_goal_6D.detach().cpu().numpy() # np array (8,)
+
+                        # print("robot current qpos: ", self.robot_qpos)
+                        # print("REF: curr teleop command: ", self.teleop_command[:])
+                        qpos_arm_goal = self.ik(self.robot_qpos, ee_goal_6D_np) # np array (7,)
+                        qpos_goal = np.append(qpos_arm_goal, ee_goal_filtered[0,-1].detach().cpu().numpy()) # np array (8,)
                         self.teleop.comm_with_residual[:] = qpos_goal # np array (8,)
+
+                        # print("qpos goal: ", qpos_goal)
+
+                        i += 1
+
+                        # if i > 5:
+                        #     break
                             
                         # # OBS SIM2REAL
                         # if len(self.robot_obs_list) == 400:
@@ -711,34 +742,35 @@ class RobotTeleopEnv(mp.Process):
                         #     print("-------------------------- FINISHED DATA COLLECTION ---------------------------")
                         #     exit()
 
-                        # INPUT&OUTPUT SIM2REAL
-                        if len(self.policy_input_list) == 400:
-                            with open("Sim2Real/input_output_gap/traj2/policy_input_list.txt", "w") as f:
-                                for arr in self.policy_input_list:
-                                    arr_flat = arr.flatten()  # Flatten in case it's multi-dimensional
-                                    line = ' '.join(map(str, arr_flat))
-                                    f.write(line + '\n')
-                            with open("Sim2Real/input_output_gap/traj2/policy_output_list.txt", "w") as f:
-                                for arr in self.policy_output_list:
-                                    arr_flat = arr.flatten()  # Flatten in case it's multi-dimensional
-                                    line = ' '.join(map(str, arr_flat))
-                                    f.write(line + '\n')
-                            with open("Sim2Real/input_output_gap/traj2/qpos_goal.txt", "w") as f:
-                                for arr in self.qpos_goal_list:
-                                    arr_flat = arr.flatten()
-                                    line = ' '.join(map(str, arr_flat))
-                                    f.write(line + '\n')
-                            with open("Sim2Real/input_output_gap/traj2/teleop_base_ee_list.txt", "w") as f:
-                                for arr in self.teleop_base_ee_list:
-                                    arr_flat = arr.flatten()
-                                    line = ' '.join(map(str, arr_flat))
-                                    f.write(line + '\n')
+                        # # INPUT&OUTPUT SIM2REAL
+                        # if len(self.policy_input_list) == 400:
+                        #     with open("Sim2Real/input_output_gap/traj2/policy_input_list.txt", "w") as f:
+                        #         for arr in self.policy_input_list:
+                        #             arr_flat = arr.flatten()  # Flatten in case it's multi-dimensional
+                        #             line = ' '.join(map(str, arr_flat))
+                        #             f.write(line + '\n')
+                        #     with open("Sim2Real/input_output_gap/traj2/policy_output_list.txt", "w") as f:
+                        #         for arr in self.policy_output_list:
+                        #             arr_flat = arr.flatten()  # Flatten in case it's multi-dimensional
+                        #             line = ' '.join(map(str, arr_flat))
+                        #             f.write(line + '\n')
+                        #     with open("Sim2Real/input_output_gap/traj2/qpos_goal.txt", "w") as f:
+                        #         for arr in self.qpos_goal_list:
+                        #             arr_flat = arr.flatten()
+                        #             line = ' '.join(map(str, arr_flat))
+                        #             f.write(line + '\n')
+                        #     with open("Sim2Real/input_output_gap/traj2/teleop_base_ee_list.txt", "w") as f:
+                        #         for arr in self.teleop_base_ee_list:
+                        #             arr_flat = arr.flatten()
+                        #             line = ' '.join(map(str, arr_flat))
+                        #             f.write(line + '\n')
 
-                            print("-------------------------- FINISHED DATA COLLECTION ---------------------------")
-                            exit()
+                        #     print("-------------------------- FINISHED DATA COLLECTION ---------------------------")
+                        #     exit()
                     
                     else:
                         self.teleop.comm_with_residual[:] = self.teleop_command[:].copy()
+                        i = 0
 
 
                 # # update images from realsense to shared memory
@@ -895,11 +927,10 @@ class RobotTeleopEnv(mp.Process):
     def mp2np(self, mp_array: mp.Array) -> np.array:
         return np.frombuffer(mp_array.get_obj())  
 
-    def ik(self, curr_qpos: np.array, ee_goal: np.array) -> np.array:
+    def ik(self, curr_qpos: np.array, cartesian_goal: np.array) -> np.array:
         '''
-        ee_goal: shape (8, )
+        ee_goal: shape (6, )
         '''
-        cartesian_goal = np.concatenate([ee_goal[:3], self.euler_from_quat_np(ee_goal[3:7])], axis=0)
         qpos = self.kin_helper.compute_ik_sapien(curr_qpos, cartesian_goal)
         return qpos.reshape(-1,)
 
