@@ -16,9 +16,10 @@ from camera.multi_realsense import MultiRealsense
 from camera.single_realsense import SingleRealsense
 
 import pyzed.sl as sl
+import math
 
-class PerceptionZed(mp.Process):
-    name = "PerceptionZed"
+class PerceptionZED(mp.Process):
+    name = "PerceptionZED"
 
     def __init__(
         self,
@@ -34,7 +35,6 @@ class PerceptionZed(mp.Process):
         super().__init__()
         self.verbose = verbose
 
-        self.capture_fps = capture_fps
         self.record_fps = record_fps
         self.record_time = record_time
         self.exp_name = exp_name
@@ -51,6 +51,13 @@ class PerceptionZed(mp.Process):
         self.record_restart = mp.Value('b', False)
         self.record_stop = mp.Value('b', False)
 
+        # zed camera initial params
+        self.init_params = sl.InitParameters()
+        self.init_params.depth_mode = sl.DEPTH_MODE.ULTRA
+        self.init_params.coordinate_units = sl.UNIT.MILLIMETER
+        self.init_params.camera_resolution = sl.RESOLUTION.HD720
+        self.init_params.camera_fps = capture_fps
+
     def log(self, msg):
         if self.verbose:
             print(f"\033[92m{self.name}: {msg}\033[0m")
@@ -60,11 +67,21 @@ class PerceptionZed(mp.Process):
         return self.record_fps != 0
 
     def run(self):
-        # limit threads
-        threadpool_limits(1)
-        cv2.setNumThreads(1)
+        # # limit threads
+        # threadpool_limits(1)
+        # cv2.setNumThreads(1)
 
-        realsense = self.realsense
+        zed = self.zed
+        init_params = self.init_params
+
+        # Open the camera
+        status = zed.open(init_params)
+        if status != sl.ERROR_CODE.SUCCESS: #Ensure the camera has opened succesfully
+            print("Camera Open : "+repr(status)+". Exit program.")
+            exit()
+
+        # Create and set RuntimeParameters after opening the camera
+        runtime_parameters = sl.RuntimeParameters()
 
         # i = self.index
         capture_fps = self.capture_fps
@@ -77,88 +94,63 @@ class PerceptionZed(mp.Process):
         is_recording = False  # recording state flag
         timestamps_f = None
 
+        i = 0
+        image = sl.Mat()
+        depth = sl.Mat()
+        point_cloud = sl.Mat()
+
+        mirror_ref = sl.Transform()
+        mirror_ref.set_translation(sl.Translation(2.75,4.0,0))
+
         while self.alive.value:
             try: 
-                perception_start_time = time.time()
-                cameras_output = realsense.get(out=cameras_output)
-                get_time = time.time()
-                timestamps = [cameras_output[i]['timestamp'].item() for i in range(self.num_cam)]
-                if is_recording and not all([abs(timestamps[i] - timestamps[i+1]) < 0.05 for i in range(self.num_cam - 1)]):
-                    print(f"Captured at different timestamps: {[f'{x:.2f}' for x in timestamps]}")
+                if zed.grab(runtime_parameters) == sl.ERROR_CODE.SUCCESS:
+                    # Retrieve left image
+                    zed.retrieve_image(image, sl.VIEW.LEFT)
+                    # Retrieve depth map. Depth is aligned on the left image
+                    zed.retrieve_measure(depth, sl.MEASURE.DEPTH)
 
-                # treat captured time and record time as the same
-                process_start_time = get_time
-                process_out = self.process_func(cameras_output) if self.process_func is not None else cameras_output
-                self.log(f"process time: {time.time() - process_start_time}")
-            
-                if not self.perception_q.full():
-                    self.perception_q.put(process_out)             
+                    print(f"depth size: {depth.get_width()} x {depth.get_height()}")
+                    print("depth value: ", depth.get_value(0, 0))
+                    # # Retrieve colored point cloud. Point cloud is aligned on the left image.
+                    # zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA)
 
-                if self.can_record:
-                    # recording state machine:
-                    #           ---restart_cmd--->
-                    # record                           not_record
-                    #       <-- stop_cmd / timeover ----
-                    if not is_recording and self.record_restart.value == True:
-                        self.record_restart.value = False
+                    # # Get and print distance value in mm at the center of the image
+                    # # We measure the distance camera - object using Euclidean distance
+                    # x = round(image.get_width() / 2)
+                    # y = round(image.get_height() / 2)
+                    # err, point_cloud_value = point_cloud.get_value(x, y)
 
-                        recording_frame = 0
-                        record_start_time = get_time
-                        record_start_frame = cameras_output[0]['step_idx'].item()
-                        
-                        record_dir = root / "log" / self.data_dir / self.exp_name / f"{record_start_time:.0f}"
-                        os.makedirs(record_dir, exist_ok=True)
-                        timestamps_f = open(f'{record_dir}/timestamps.txt', 'a')
-                        
-                        for i in range(self.num_cam):
-                            os.makedirs(f'{record_dir}/camera_{i}/rgb', exist_ok=True)
-                            os.makedirs(f'{record_dir}/camera_{i}/depth', exist_ok=True)
-                        is_recording = True
-                    
-                    elif is_recording and (
-                        self.record_stop.value == True or 
-                        (recording_frame >= record_time * record_fps)
-                    ):
-                        finish_time = get_time
-                        print(f"is_recording {is_recording}, self.record_stop.value {self.record_stop.value}, recording time {recording_frame}, max recording time {record_time} * {record_fps}")
-                        print(f"total time: {finish_time - record_start_time}")
-                        print(f"fps: {recording_frame / (finish_time - record_start_time)}")
-                        is_recording = False
-                    
-                        timestamps_f.close()
-                        self.record_restart.value = False
-                        self.record_stop.value = False
-                    else:
-                        self.record_restart.value = False
-                        self.record_stop.value = False
+                    # if math.isfinite(point_cloud_value[2]):
+                    #     distance = math.sqrt(point_cloud_value[0] * point_cloud_value[0] +
+                    #                         point_cloud_value[1] * point_cloud_value[1] +
+                    #                         point_cloud_value[2] * point_cloud_value[2])
+                    #     print(f"Distance to Camera at {{{x};{y}}}: {distance}")
+                    # else : 
+                    #     print(f"The distance can not be computed at {{{x};{y}}}")
 
-                    # record the frame according to the record_fps
-                    if is_recording and cameras_output[0]['step_idx'].item() >= (recording_frame * (capture_fps // record_fps) + record_start_frame):
-                        timestamps_f.write(' '.join(
-                            [str(cameras_output[i]['step_idx'].item()) for i in range(self.num_cam)] + 
-                            [str(np.round(cameras_output[i]['timestamp'].item() - record_start_time, 3)) for i in range(self.num_cam)] + 
-                            [str(cameras_output[i]['timestamp'].item()) for i in range(self.num_cam)]
-                        ) + '\n')
-                        timestamps_f.flush()
-                        for i in range(self.num_cam):
-                            cv2.imwrite(f'{record_dir}/camera_{i}/rgb/{recording_frame:06}.jpg', cameras_output[i]['color'])
-                            cv2.imwrite(f'{record_dir}/camera_{i}/depth/{recording_frame:06}.png', cameras_output[i]['depth'])
-                        recording_frame += 1
-                # print(f"perception update freq: {1/(time.time() - perception_start_time)} Hz")
-            # except:
-            #     print(f"Perception error")
-            #     break
+
+
+
+                    perception_start_time = time.time()
+                    cameras_output = depth
+                    print("camera output type: ", type(cameras_output))
+                    print("camera output", cameras_output.get_value(0, 0))
+                    get_time = time.time()
+                    timestamps = [cameras_output[i]['timestamp'].item() for i in range(self.num_cam)]
+
+                    # treat captured time and record time as the same
+                    process_start_time = get_time
+                    process_out = self.process_func(cameras_output) if self.process_func is not None else cameras_output
+                    self.log(f"process time: {time.time() - process_start_time}")
+                
+                    if not self.perception_q.full():
+                        self.perception_q.put(process_out)             
+
             except BaseException as e:
                 print("Perception error: ", e)
                 break
-                # print(f"\033[91mPerception error\033[0m: {e.with_traceback()}")
 
-        if self.can_record:
-            if timestamps_f is not None and not timestamps_f.closed:
-                timestamps_f.close()
-            finish_time = time.time()
-            # print(f"total time: {finish_time - record_start_time}")
-            # print(f"fps: {recording_frame / (finish_time - record_start_time)}")
         self.stop()
         print("Perception process stopped")
 
@@ -169,6 +161,7 @@ class PerceptionZed(mp.Process):
 
     def stop(self):
         self.alive.value = False
+        self.zed.close()
         self.perception_q.close()
     
     def set_record_start(self):

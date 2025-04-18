@@ -24,6 +24,7 @@ from utils import get_root, mkdir
 root: Path = get_root(__file__)
 
 from modules_teleop.perception import Perception
+from modules_teleop.perception_zed import PerceptionZED
 from modules_teleop.xarm_controller import XarmController
 from modules_teleop.teleop_keyboard import KeyboardTeleop
 from modules_teleop.kinematics_utils import *
@@ -36,6 +37,7 @@ from camera.multi_realsense import MultiRealsense
 from camera.single_realsense import SingleRealsense
 
 from rsl_rl.modules import EmpiricalNormalization
+import pyzed.sl as sl
 
 class EnvEnum(Enum):
     NONE = 0
@@ -164,11 +166,10 @@ class RobotTeleopEnv(mp.Process):
             self.perception = perception
         else:
             self.perception = Perception(
-                realsense=self.realsense,
-                capture_fps=self.realsense.capture_fps,  # mush be the same as realsense capture fps 
+                realsense=sl.Camera(),
+                capture_fps=30,  # mush be the same as realsense capture fps 
                 record_fps=record_fps,
                 record_time=record_time,
-                process_func=perception_process_func,
                 exp_name=exp_name,
                 data_dir=data_dir,
                 verbose=self.debug > EnvEnum.VERBOSE.value)
