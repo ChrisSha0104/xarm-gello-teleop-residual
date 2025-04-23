@@ -12,6 +12,7 @@ from torch.distributions import Normal
 from .res_net import ResNet18Conv
 from .res_net import CNNEncoder
 import time
+import matplotlib.pyplot as plt
 
 '''
 Uses rsl-rl actor critic with visual encoder and residual policy related designs (e.g., orthogonal initialization, small gain factors, low initial standard deviation, and smooth activations (SiLU))
@@ -90,9 +91,9 @@ class ResidualActorCriticVisual(nn.Module):
         critic_last_layer_bias_const=0.0,
         critic_last_layer_std=1.0,
         critic_last_layer_activation=None,
-        use_visual_encoder=False,
+        use_visual_encoder=True,
         visual_idx_actor=[20,20+120*120],
-        visual_idx_critic=[28,28+120*120],
+        visual_idx_critic=[29,29+120*120],
         encoder_output_dim=128,
         **kwargs,
     ):
@@ -159,7 +160,7 @@ class ResidualActorCriticVisual(nn.Module):
         )
         self.distribution = None
         # disable args validation for speedup
-        Normal.set_default_validate_args = False
+        Normal.set_default_validate_args = False # type: ignore
 
         # seems that we get better performance without init
         # self.init_memory_weights(self.memory_a, 0.001, 0.)
@@ -218,6 +219,10 @@ class ResidualActorCriticVisual(nn.Module):
         """
         if self.use_visual_encoder:
             visual_obs = observations[:,self.visual_idx_actor[0]:self.visual_idx_actor[1]].reshape(-1, 1, self.Height, self.Width)
+            depth_np = visual_obs.detach().cpu().numpy().reshape(120,120)
+            # plt.imshow(depth_np)
+            # plt.title("input depth inside")
+            # plt.show()
             visual_embedding = self.visual_encoder(visual_obs)
             visual_embedding = visual_embedding / (torch.norm(visual_embedding, dim=-1, keepdim=True)/5 + 1e-6)
             observations = torch.cat((observations[:,:self.visual_idx_actor[0]], visual_embedding), dim=-1)

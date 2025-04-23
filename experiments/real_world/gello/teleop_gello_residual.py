@@ -420,7 +420,7 @@ class GelloTeleopResidual(mp.Process):
         self.gello_listener = GelloListener(
             # shm_manager=self.shm_manager,
             bimanual=self.bimanual,
-            gello_port='/dev/ttyUSB1',
+            gello_port='/dev/ttyUSB0',
             bimanual_gello_port=['/dev/ttyUSB0', '/dev/ttyUSB1'],
         )
         self.gello_listener.start()

@@ -23,11 +23,10 @@ class PerceptionZED(mp.Process):
 
     def __init__(
         self,
-        zed: sl.Camera(), 
         capture_fps, 
         record_fps, 
         record_time, 
-        # process_func,
+        process_func,
         exp_name=None,
         data_dir="data",
         verbose=False,
@@ -43,20 +42,11 @@ class PerceptionZED(mp.Process):
         if self.exp_name is None:
             assert self.record_fps == 0
 
-        self.zed = zed
+        self.process_func = process_func
         self.perception_q = mp.Queue(maxsize=1)
-
-        # self.process_func = process_func
         self.alive = mp.Value('b', False)
         self.record_restart = mp.Value('b', False)
         self.record_stop = mp.Value('b', False)
-
-        # zed camera initial params
-        self.init_params = sl.InitParameters()
-        self.init_params.depth_mode = sl.DEPTH_MODE.ULTRA
-        self.init_params.coordinate_units = sl.UNIT.MILLIMETER
-        self.init_params.camera_resolution = sl.RESOLUTION.HD720
-        self.init_params.camera_fps = capture_fps
 
     def log(self, msg):
         if self.verbose:
@@ -67,77 +57,92 @@ class PerceptionZED(mp.Process):
         return self.record_fps != 0
 
     def run(self):
-        # # limit threads
-        # threadpool_limits(1)
-        # cv2.setNumThreads(1)
+        # limit threads
+        threadpool_limits(1)
+        cv2.setNumThreads(1)
 
-        zed = self.zed
-        init_params = self.init_params
+        # initialize camera
+        zed = sl.Camera()
+
+        # zed camera initial params
+        init_params = sl.InitParameters()
+        init_params.camera_resolution = sl.RESOLUTION.HD720  # Use HD720 resolution
+        init_params.depth_mode = sl.DEPTH_MODE.NEURAL  # Use ULTRA depth mode
+        init_params.coordinate_units = sl.UNIT.MILLIMETER  # Use meter units (for depth measurements)
+        init_params.depth_minimum_distance = 100  # Set minimum depth distance to 0.1 meters
+        init_params.depth_maximum_distance = 1000  # Set maximum depth distance to 1.0 meters
+        init_params.camera_fps = 30
+        init_params.sdk_verbose = 1
 
         # Open the camera
         status = zed.open(init_params)
         if status != sl.ERROR_CODE.SUCCESS: #Ensure the camera has opened succesfully
             print("Camera Open : "+repr(status)+". Exit program.")
-            exit()
+            self.close()
+            exit(1)
+
+        # print("ZED camera opened")
 
         # Create and set RuntimeParameters after opening the camera
         runtime_parameters = sl.RuntimeParameters()
+        runtime_parameters.enable_fill_mode = True
 
-        # i = self.index
-        capture_fps = self.capture_fps
-        record_fps = self.record_fps
-        record_time = self.record_time
+        # print("ZED camera parameters set")
 
-        cameras_output = None
-        recording_frame = float("inf")  # local record step index (since current record start), record fps
-        record_start_frame = 0  # global step index (since process start), capture fps
-        is_recording = False  # recording state flag
-        timestamps_f = None
+        # # i = self.index
+        # capture_fps = self.capture_fps
+        # record_fps = self.record_fps
+        # record_time = self.record_time
 
-        i = 0
-        image = sl.Mat()
-        depth = sl.Mat()
-        point_cloud = sl.Mat()
+        # cameras_output = None
+        # recording_frame = float("inf")  # local record step index (since current record start), record fps
+        # record_start_frame = 0  # global step index (since process start), capture fps
+        # is_recording = False  # recording state flag
+        # timestamps_f = None
 
-        mirror_ref = sl.Transform()
-        mirror_ref.set_translation(sl.Translation(2.75,4.0,0))
+        image_size = zed.get_camera_information().camera_configuration.resolution
+        image_size.width = int(image_size.width / 2)
+        image_size.height = int(image_size.height / 2)
+
+        # print("ZED camera image size: ", image_size)
+
+        # image_zed = sl.Mat(image_size.width, image_size.height, sl.MAT_TYPE.U8_C4, sl.MEM.CPU)
+        # depth_image_zed = sl.Mat(image_size.width, image_size.height, sl.MAT_TYPE.U8_C4, sl.MEM.CPU)
+        depth_zed = sl.Mat(image_size.width, image_size.height, sl.MAT_TYPE.U8_C4, sl.MEM.CPU)
+        # point_cloud = sl.Mat(sl.MEM.CPU)
+
+        # print("ZED camera image mat created")
+
+        # zed.grab(runtime_parameters)
+
+        # print("grabbed result: ", zed.grab(runtime_parameters))
+        # print("ZED camera started grabbing")
 
         while self.alive.value:
+            # print("is alive")
             try: 
                 if zed.grab(runtime_parameters) == sl.ERROR_CODE.SUCCESS:
+                    # print("started zed")
                     # Retrieve left image
-                    zed.retrieve_image(image, sl.VIEW.LEFT)
-                    # Retrieve depth map. Depth is aligned on the left image
-                    zed.retrieve_measure(depth, sl.MEASURE.DEPTH)
+                    # zed.retrieve_image(image_zed, sl.VIEW.LEFT, sl.MEM.CPU, image_size)
+                    # zed.retrieve_image(depth_image_zed, sl.VIEW.DEPTH, sl.MEM.CPU, image_size)
+                    # zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA, sl.MEM.CPU, image_size)
+                    zed.retrieve_measure(depth_zed, sl.MEASURE.DEPTH, sl.MEM.CPU, image_size)
 
-                    print(f"depth size: {depth.get_width()} x {depth.get_height()}")
-                    print("depth value: ", depth.get_value(0, 0))
-                    # # Retrieve colored point cloud. Point cloud is aligned on the left image.
-                    # zed.retrieve_measure(point_cloud, sl.MEASURE.XYZRGBA)
+                    # image_ocv = image_zed.get_data()
+                    # depth_image_ocv = depth_image_zed.get_data()
+                    depth_ocv = depth_zed.get_data()
 
-                    # # Get and print distance value in mm at the center of the image
-                    # # We measure the distance camera - object using Euclidean distance
-                    # x = round(image.get_width() / 2)
-                    # y = round(image.get_height() / 2)
-                    # err, point_cloud_value = point_cloud.get_value(x, y)
-
-                    # if math.isfinite(point_cloud_value[2]):
-                    #     distance = math.sqrt(point_cloud_value[0] * point_cloud_value[0] +
-                    #                         point_cloud_value[1] * point_cloud_value[1] +
-                    #                         point_cloud_value[2] * point_cloud_value[2])
-                    #     print(f"Distance to Camera at {{{x};{y}}}: {distance}")
-                    # else : 
-                    #     print(f"The distance can not be computed at {{{x};{y}}}")
-
-
-
+                    depth_vis = self.filter_depth_for_visualization(depth_ocv, unit="mm")
+                    # cv2.imshow("depth_zed", depth_vis)
+                    # cv2.imshow("depth_image", depth_image_ocv)
+                    # cv2.imshow("Image", image_ocv)
+                    # cv2.waitKey(1)
 
                     perception_start_time = time.time()
-                    cameras_output = depth
-                    print("camera output type: ", type(cameras_output))
-                    print("camera output", cameras_output.get_value(0, 0))
+                    cameras_output = depth_ocv
                     get_time = time.time()
-                    timestamps = [cameras_output[i]['timestamp'].item() for i in range(self.num_cam)]
+                    # timestamps = [cameras_output[i]['timestamp'].item() for i in range(self.num_cam)]
 
                     # treat captured time and record time as the same
                     process_start_time = get_time
@@ -151,6 +156,8 @@ class PerceptionZED(mp.Process):
                 print("Perception error: ", e)
                 break
 
+        # cv2.destroyAllWindows()
+        zed.close()
         self.stop()
         print("Perception process stopped")
 
@@ -161,7 +168,6 @@ class PerceptionZED(mp.Process):
 
     def stop(self):
         self.alive.value = False
-        self.zed.close()
         self.perception_q.close()
     
     def set_record_start(self):
@@ -179,6 +185,38 @@ class PerceptionZED(mp.Process):
         else:
             self.record_stop.value = True
             print("record stop cmd received")
+
+    def filter_depth_for_visualization(self, depth: np.ndarray, unit: str = "m") -> np.ndarray:
+        """
+        Visualize depth image using cv2.
+        """
+
+        if unit == "mm":
+            depth = depth / 1000.0
+        elif unit == "cm":
+            depth = depth / 100.0
+
+        max_depth = 1.0 # in meters
+        min_depth = 0.1 # in meters
+
+        # remove NaN and Inf values
+        depth_filtered = np.nan_to_num(
+            depth,
+            nan=0.0,
+            posinf=max_depth,
+            neginf=min_depth,
+        )
+        
+        # clip depth
+        depth = np.clip(depth_filtered, min_depth, max_depth)
+
+        # Normalize to [0, 255] and convert to uint8
+        depth_uint8 = (depth / max_depth * 255.0).astype(np.uint8)
+        
+        depth_vis = cv2.applyColorMap(depth_uint8, cv2.COLORMAP_JET)
+        # depth_vis = cv2.resize(depth_vis, (480, 480))
+        
+        return depth_vis
 
 
 def perception_func_test():
