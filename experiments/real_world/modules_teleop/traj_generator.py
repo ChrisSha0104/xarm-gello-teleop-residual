@@ -619,37 +619,45 @@ def subtract_z_in_baseframe_batch(ee_pose, z_offset=0.15):
 
 ### Helpers for transferring trajectories between real and sim
 
-def save_to_txt(data, filename):
+def save_to_txt(data, filename, delimiter=" "):
     """
-    Save list of numpy arrays or torch tensors to a txt file, one element per line.
-    
+    Save list of numpy arrays or torch tensors to a txt file,
+    writing each array/tensor as a single line.
+
     Args:
         data (list[np.ndarray] | list[torch.Tensor] | torch.Tensor): Input data to save.
         filename (str): Output file path.
+        delimiter (str): Delimiter between elements on each line (default: space).
     """
     with open(filename, 'w') as f:
-        # Convert PyTorch tensor to numpy
+        # Convert single torch tensor to numpy if not in list
         if isinstance(data, torch.Tensor):
             data = data.detach().cpu().numpy()
+            if data.ndim == 1:
+                data = data.reshape(1, -1)
+            for row in data:
+                row_str = delimiter.join(map(str, row))
+                f.write(f"{row_str}\n")
 
-        # If it's a single ndarray, wrap in a list for consistency
-        if isinstance(data, np.ndarray) and data.ndim == 1:
-            data = data.reshape(-1, 1)
+        # If it's a single numpy array
+        elif isinstance(data, np.ndarray):
+            if data.ndim == 1:
+                data = data.reshape(1, -1)
+            for row in data:
+                row_str = delimiter.join(map(str, row))
+                f.write(f"{row_str}\n")
 
-        # Handle list of arrays/tensors
-        if isinstance(data, list):
+        # If it's a list of arrays/tensors
+        elif isinstance(data, list):
             for item in data:
                 if isinstance(item, torch.Tensor):
                     item = item.detach().cpu().numpy()
                 if isinstance(item, np.ndarray):
                     item = item.flatten()
-                    for val in item:
-                        f.write(f"{val}\n")
-        elif isinstance(data, np.ndarray):
-            for row in data:
-                row = np.atleast_1d(row)
-                for val in row:
-                    f.write(f"{val}\n")
+                    row_str = delimiter.join(map(str, item))
+                    f.write(f"{row_str}\n")
+                else:
+                    raise TypeError("List elements must be np.ndarray or torch.Tensor")
         else:
             raise TypeError("Input must be a list of arrays/tensors or a tensor/ndarray.")
         

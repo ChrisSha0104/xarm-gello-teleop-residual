@@ -335,10 +335,16 @@ class RobotTeleopEnvState(mp.Process):
             self.policy_output_list = []
             self.teleop_base_ee_list = []
 
-            self.sim_teleop_comm_ee_fr_traj = load_from_txt("Sim2Real/sim_traj1/teleop_comm_ee_fr.txt", "torch")
-            self.sim_teleop_comm_base_fr_traj = load_from_txt("Sim2Real/sim_traj1/teleop_comm_base_fr.txt", "torch")
+            # self.sim_teleop_comm_ee_fr_traj = load_from_txt("Sim2Real/sim_traj1/teleop_comm_ee_fr.txt", "torch")
+            self.sim_teleop_comm_base_fr_traj = load_from_txt("sim2real_vis_traj2/base_traj/teleop_comm_b.txt", "torch")
+            self.real_robot_ee_b = []
+            self.real_ee_goal_with_res = []
 
-    def get_policy(self, actor_critic, model_path) -> Callable: #TODO: add empirical normalizatiopn
+            self.play_sim_base_traj = True
+            self.store_traj_data = True
+            self.print_all_intermediate_value = False
+
+    def get_policy(self, actor_critic, model_path) -> Callable:
         loaded_dict = torch.load(model_path, weights_only=False)
         actor_critic.load_state_dict(loaded_dict['model_state_dict'])
         obs_normalizer = EmpiricalNormalization(shape=(29,))
@@ -351,6 +357,9 @@ class RobotTeleopEnvState(mp.Process):
         return policy
     
     def get_observations(self, i=None):
+        if i == 400:
+            print("end of traj")
+            exit()
         # visual obs
         # raw_depth = self.state["perception_out"]["value"][0]["depth"].copy()
         # cropped_depth = cv2.resize(raw_depth, (120, 120))
@@ -362,13 +371,23 @@ class RobotTeleopEnvState(mp.Process):
         curr_robot_ee_b = torch.from_numpy(self.robot_states_obs.copy()).float().reshape(1, -1)
         self.robot_state_hist.append(curr_robot_ee_b)
         prev_robot_ee_b = self.robot_state_hist.get_oldest_obs() 
-        prev_ee_in_curr_ee_fr = subtract_frame_transforms_10D(curr_robot_ee_b, prev_robot_ee_b) 
-        print("curr robot ee b: ", curr_robot_ee_b)
+        prev_ee_in_curr_ee_fr = subtract_frame_transforms_10D(curr_robot_ee_b, prev_robot_ee_b)
 
-        curr_teleop_comm_b = torch.from_numpy(self.teleop_states_obs.copy()).float().reshape(1, -1)
-        # curr_teleop_comm_b = self.sim_teleop_comm_base_fr_traj[i].clone().reshape(1, -1)
+        if self.store_traj_data:
+            self.real_robot_ee_b.append(curr_robot_ee_b.clone())
+            if len(self.real_robot_ee_b) == 400:
+                save_to_txt(self.real_robot_ee_b, "sim2real_vis_traj2/real_traj2_data/robot_obs/real_robot_ee_b.txt")
+                print("robot ee b saved")
+            
+        if self.play_sim_base_traj:
+            curr_teleop_comm_b = self.sim_teleop_comm_base_fr_traj[i].clone().reshape(1, -1) # playing sim recorded base traj
+        else:
+            curr_teleop_comm_b = torch.from_numpy(self.teleop_states_obs.copy()).float().reshape(1, -1)
         curr_comm_in_curr_ee_fr = subtract_frame_transforms_10D(curr_robot_ee_b, curr_teleop_comm_b)
-        print("curr teleop comm b: ", curr_teleop_comm_b)
+
+        if self.print_all_intermediate_value:
+            print("curr robot ee b: ", curr_robot_ee_b)
+            print("curr teleop comm b: ", curr_teleop_comm_b)
 
         # print("curr teleop comm in curr ee fr: ", curr_comm_in_curr_ee_fr)
 
@@ -655,11 +674,6 @@ class RobotTeleopEnvState(mp.Process):
         self.ee_goal = torch.zeros((1,10), dtype=torch.float32)
         self.last_ee = torch.zeros((1,10), dtype=torch.float32)
 
-        # obs_test = torch.load("obs_test/obs_test.pt").to('cpu')
-        # actions = self.policy(obs_test)
-        # print("actions: ", actions)
-        # exit()
-
         while self.alive:
             try:
                 tic = time.time()
@@ -681,9 +695,8 @@ class RobotTeleopEnvState(mp.Process):
                 idx += 1
 
                 self.teleop_command[:] = list(self.teleop.command)
-
                 if self.use_gello and self.use_residual_policy:
-                    if self.teleop.start_residual_policy.value: #self.xarm_controller.teleop_activated.value:
+                    if self.xarm_controller.teleop_activated.value:#self.teleop.start_residual_policy.value: #self.xarm_controller.teleop_activated.value:
                         curr_robot_ee_b, curr_comm_in_curr_ee_fr, obs = self.get_observations(i)
                         # print("----------------got obs----------------")
 
@@ -700,16 +713,11 @@ class RobotTeleopEnvState(mp.Process):
                         if torch.norm(self.alpha * curr_residual) > 0.5:
                             print("residual too large, exiting")
                             exit()
-                        # print("base action: ", curr_comm_in_curr_ee_fr)
-                        # print("residual: ", curr_residual)
-                        # print("output_norm: ", torch.norm(curr_residual))
-                        # print("residual: ", self.alpha * curr_residual)
+
 
                         self.last_ee = self.ee_goal.clone()
                         goal_in_ee_fr = curr_comm_in_curr_ee_fr + self.alpha * curr_residual.clone()
                         self.ee_goal = combine_frame_transforms_10D(curr_robot_ee_b, goal_in_ee_fr)
-
-                        # print("clean ee goal b", self.ee_goal)
 
                         if i == 0:
                             self.last_ee = self.ee_goal.clone()
@@ -718,18 +726,27 @@ class RobotTeleopEnvState(mp.Process):
                         ee_goal_filtered[:,:3] = torch.clamp(ee_goal_filtered[:,:3], self.robot_position_lower_limits, self.robot_position_upper_limits)
                         ee_goal_filtered[:,-1] = (ee_goal_filtered[:,-1] > 0.5).float()
 
-                        print("ee goal filtered: ", ee_goal_filtered)
+                        if self.store_traj_data:
+                            self.real_ee_goal_with_res.append(ee_goal_filtered.clone())
+                            if len(self.real_ee_goal_with_res) == 400:
+                                save_to_txt(self.real_ee_goal_with_res, "sim2real_vis_traj2/real_traj2_data/ee_with_residual/real_ee_goal_with_res.txt")
+                                print("ee goal with res saved")
 
                         quat = quat_from_6d(ee_goal_filtered[:,3:9])
                         r, p, y = euler_xyz_from_quat(quat) # type: ignore
                         ee_goal_6D = torch.cat([ee_goal_filtered[0,:3], r, p, y], dim=0) # shape (8,)
                         ee_goal_6D_np = ee_goal_6D.detach().cpu().numpy() # np array (8,)
 
-                        # print("robot current qpos: ", self.robot_qpos)
-                        # print("REF: curr teleop command: ", self.teleop_command[:])
                         qpos_arm_goal = self.ik(self.robot_qpos, ee_goal_6D_np) # np array (7,)
                         qpos_goal = np.append(qpos_arm_goal, ee_goal_filtered[0,-1].detach().cpu().numpy()) # np array (8,)
                         self.teleop.comm_with_residual[:] = qpos_goal # np array (8,)
+
+                        if self.print_all_intermediate_value:
+                            print("base action: ", curr_comm_in_curr_ee_fr)
+                            print("residual: ", curr_residual)
+                            print("clean ee goal b", self.ee_goal)
+                            print("ee goal filtered: ", ee_goal_filtered)
+                            print("robot current qpos: ", self.robot_qpos)
 
                         # print("qpos goal: ", qpos_goal)
 
