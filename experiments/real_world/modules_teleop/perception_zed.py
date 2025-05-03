@@ -70,7 +70,7 @@ class PerceptionZED(mp.Process):
         init_params.depth_mode = sl.DEPTH_MODE.NEURAL  # Use ULTRA depth mode
         init_params.coordinate_units = sl.UNIT.MILLIMETER  # Use meter units (for depth measurements)
         init_params.depth_minimum_distance = 100  # Set minimum depth distance to 0.1 meters
-        init_params.depth_maximum_distance = 1000  # Set maximum depth distance to 1.0 meters
+        init_params.depth_maximum_distance = 1500  # Set maximum depth distance to 1.0 meters
         init_params.camera_fps = 30
         init_params.sdk_verbose = 1
 

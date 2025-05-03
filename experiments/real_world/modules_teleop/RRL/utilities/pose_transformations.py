@@ -232,11 +232,10 @@ def project_rotation_matrix(R: torch.Tensor) -> torch.Tensor:
         R_proj = R_proj.squeeze(0)
     return R_proj
 
-def sixd_to_rotation_matrix(sixd: torch.Tensor, eps=1e-6, collinearity_thresh=0.99, tol=1e-3) -> torch.Tensor:
+def sixd_to_rotation_matrix(sixd: torch.Tensor, eps: float = 1e-6, collinearity_thresh: float = 1e-3, tol: float = 1e-3) -> torch.Tensor:
     """
-    Convert a 6D orientation representation to a rotation matrix with checks to avoid degenerate cases.
-    
-    This function uses a Gram–Schmidt process (with safety checks) to form a rotation matrix.
+    Convert a 6D orientation representation to a rotation matrix 
+    This function uses a Gram–Schmidt process to form a rotation matrix.
     After computing the matrix, it checks whether the matrix is orthonormal and, if not, projects it onto SO(3).
     
     Args:
@@ -248,58 +247,42 @@ def sixd_to_rotation_matrix(sixd: torch.Tensor, eps=1e-6, collinearity_thresh=0.
     Returns:
         torch.Tensor: Rotation matrix of shape (3, 3) or (batch_size, 3, 3).
     """
-    squeeze_output = False
-    if sixd.dim() == 1:
-        sixd = sixd.unsqueeze(0)
-        squeeze_output = True
+    single_input = sixd.dim() == 1
+    if single_input:
+        sixd = sixd.unsqueeze(0)  # (1, 6)
 
-    # Split into two 3D vectors.
-    a = sixd[:, :3]  # candidate for first column
-    b = sixd[:, 3:6]  # candidate for second column
+    x_raw = sixd[:, 0:3]
+    y_raw = sixd[:, 3:6]
 
-    # Check norm of first vector.
-    a_norm = a.norm(dim=1, keepdim=True)
-    if torch.isnan(a_norm).any() or torch.isinf(a_norm).any():
-        import pdb; pdb.set_trace()
-        raise ValueError("Invalid values in a_norm")
-    if (a_norm < eps).any():
-        # Replace near-zero vectors with a default direction.
-        a = torch.where(a_norm < eps, torch.tensor([1.0, 0.0, 0.0], device=sixd.device).expand_as(a), a)
-        a_norm = a.norm(dim=1, keepdim=True)
-    r1 = a / (a_norm + eps)
+    # Normalize x
+    x = torch.nn.functional.normalize(x_raw, dim=1, eps=eps)
 
-    # Normalize second vector candidate.
-    b_norm = b.norm(dim=1, keepdim=True)
-    if (b_norm < eps).any():
-        b = torch.tensor([0.0, 1.0, 0.0], device=sixd.device).expand_as(b)
-        b_norm = b.norm(dim=1, keepdim=True)
-    b = b / (b_norm + eps)
+    # Make y orthogonal to x
+    dot = (x * y_raw).sum(dim=1, keepdim=True)
+    y = torch.nn.functional.normalize(y_raw - dot * x, dim=1, eps=eps)
 
-    # Check for near-collinearity.
-    dot = (r1 * b).sum(dim=1, keepdim=True)
-    nearly_collinear = (dot.abs() > collinearity_thresh)
-    if nearly_collinear.any():
-        # For problematic cases, choose a candidate vector that is guaranteed not to be collinear.
-        default = torch.tensor([0.0, 0.0, 1.0], device=sixd.device).expand_as(r1)
-        alternative = torch.tensor([0.0, 1.0, 0.0], device=sixd.device).expand_as(r1)
-        condition = (r1 - default).norm(dim=1, keepdim=True) < eps
-        candidate = torch.where(condition, alternative, default)
-        b = torch.cross(r1, candidate, dim=1)
-        b = torch.nn.functional.normalize(b, dim=1)
-    else:
-        # Standard Gram–Schmidt orthogonalization.
-        b_proj = dot * r1
-        b_ortho = b - b_proj
-        b = torch.nn.functional.normalize(b_ortho, dim=1)
+    # Compute z as cross product
+    z = torch.cross(x, y, dim=1)
 
-    # Compute third column as cross product.
-    r3 = torch.cross(r1, b, dim=1)
-    R = torch.stack((r1, b, r3), dim=2)
+    # Stack as rotation matrix
+    rot = torch.stack((x, y, z), dim=-1)  # shape (B, 3, 3)
 
-    # Validate the resulting rotation matrix.
-    if not validate_rotation_matrix(R, tol=tol):
-        R = project_rotation_matrix(R)
-    return R.squeeze(0) if squeeze_output else R
+    # Check orthonormality and project to SO(3) if needed
+    def project_to_so3(matrix):
+        u, _, v = torch.svd(matrix)
+        return torch.matmul(u, v.transpose(-2, -1))
+
+    # Validate each matrix
+    identity = torch.eye(3, device=sixd.device).unsqueeze(0)
+    rot_T = rot.transpose(-2, -1)
+    prod = torch.matmul(rot_T, rot)
+    diff = torch.norm(prod - identity, dim=(1, 2))
+
+    needs_projection = diff > tol
+    if needs_projection.any():
+        rot[needs_projection] = project_to_so3(rot[needs_projection])
+
+    return rot.squeeze(0) if single_input else rot
 
 def quat_to_6d(quat: torch.Tensor) -> torch.Tensor:
     R = matrix_from_quat(quat)
@@ -405,7 +388,7 @@ def combine_frame_transforms_10D(p10: torch.Tensor, p21: torch.Tensor) -> torch.
     return p20
 
 
-def ee_7D_to_10D(ee_7D: torch.Tensor) -> torch.Tensor:
+def ee_7D_to_9D(ee_7D: torch.Tensor) -> torch.Tensor:
     """
     args:
         ee 7D

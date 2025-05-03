@@ -8,8 +8,10 @@ from utils import get_root, mkdir
 root: Path = get_root(__file__)
 sys.path.append(str(root / "real_world"))
 
+# from experiments.real_world.modules_teleop.robot_env_teleop_state import RobotTeleopEnvState
+# from experiments.real_world.modules_teleop.robot_env_teleop_vision import RobotTeleopEnvVision
+from experiments.real_world.modules_teleop.robot_env_teleop_vis import RobotTeleopEnvVision
 from experiments.real_world.modules_teleop.robot_env_teleop_state import RobotTeleopEnvState
-from experiments.real_world.modules_teleop.robot_env_teleop_vision import RobotTeleopEnvVision
 
 
 if __name__ == '__main__':

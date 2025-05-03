@@ -1559,3 +1559,14 @@ def create_rotation_matrix_from_view(
         x_axis = torch.where(is_close, replacement, x_axis)
     R = torch.cat((x_axis[:, None, :], y_axis[:, None, :], z_axis[:, None, :]), dim=1)
     return R.transpose(1, 2)
+
+def tf_vector(q, v):
+    return quat_apply(q, v)
+
+def quat_apply(a, b):
+    shape = b.shape
+    a = a.reshape(-1, 4)
+    b = b.reshape(-1, 3)
+    xyz = a[:, 1:]
+    t = xyz.cross(b, dim=-1) * 2
+    return (b + a[:, 0:1] * t + xyz.cross(t, dim=-1)).view(shape)
