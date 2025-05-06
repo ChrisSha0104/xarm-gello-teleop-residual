@@ -28,7 +28,7 @@ from modules_teleop.perception import Perception
 from modules_teleop.xarm_controller import XarmController
 from modules_teleop.teleop_keyboard import KeyboardTeleop
 from modules_teleop.kinematics_utils import *
-from modules_teleop.state_hist_buffer import HistoryBuffer
+from experiments.real_world.modules_teleop.RRL.utilities.state_hist_buffer import HistoryBuffer
 from gello.teleop_gello import GelloTeleop
 from gello.teleop_gello_residual import GelloTeleopResidual
 from camera.multi_realsense import MultiRealsense

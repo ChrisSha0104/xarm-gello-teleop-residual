@@ -261,8 +261,13 @@ def filter_depth_for_visualization(depth: np.ndarray, max_depth: float = 0.5, mi
     
     return depth_vis
 
-def filter_depth_real(real_depth, min_depth=0.1, max_depth=0.5):
-    depth_cropped = real_depth[:, 120:-120]
+def filter_depth_real(real_depth, min_depth=0.1, max_depth=0.45):
+    h, w = real_depth.shape
+    crop_w = h
+    x1 = (w - crop_w) // 2
+    x2 = x1 + crop_w 
+
+    depth_cropped = real_depth[:, x1:x2]
     depth_resized = cv2.resize(depth_cropped, (120, 120))
     depth_scaled = depth_resized / 1000.0  # Convert mm to m
     depth_filtered = np.nan_to_num(
@@ -273,3 +278,42 @@ def filter_depth_real(real_depth, min_depth=0.1, max_depth=0.5):
         )
     depth_filtered = np.clip(depth_filtered, min_depth, max_depth)
     return depth_filtered
+
+import numpy as np
+
+def add_noise_in_depth_band_np(depth: np.ndarray,
+                               min_d: float = 0.110,
+                               max_d: float = 0.19,
+                               mean: float = 0.0,
+                               std: float = 0.01,
+                               clip_min: float = 0.1,
+                               clip_max: float = 0.45) -> np.ndarray:
+    """
+    Add zero-mean Gaussian noise only to pixels whose depth lies in [min_d, max_d].
+
+    Args:
+        depth   : np.ndarray of shape (120, 120), depth in meters.
+        min_d   : lower bound of depth band to perturb.
+        max_d   : upper bound of depth band to perturb.
+        mean    : noise mean (meters).
+        std     : noise standard deviation (meters).
+        clip_min: minimum valid depth after noise.
+        clip_max: maximum valid depth after noise (None to skip upper clamp).
+
+    Returns:
+        np.ndarray of shape (120, 120): depth + noise in the specified band.
+    """
+    # 1) create mask of pixels to perturb
+    mask = (depth >= min_d) & (depth <= max_d)
+
+    # 2) sample full noise map, then zero out outside the band
+    noise = np.random.randn(*depth.shape) * std + mean
+    noise *= mask  # only keep noise inside the band
+
+    # 3) add noise and clamp
+    depth_noisy = depth + noise
+    depth_noisy = np.maximum(depth_noisy, clip_min)
+    if clip_max is not None:
+        depth_noisy = np.minimum(depth_noisy, clip_max)
+
+    return depth_noisy

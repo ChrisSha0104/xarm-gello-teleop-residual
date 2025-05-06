@@ -11,8 +11,8 @@ def plot_pixelwise_mse_heatmap(depth_path_1: str, depth_path_2: str, title="Aver
         title (str): Title for the heatmap.
     """
     # Load and verify data
-    depth1 = np.load(depth_path_1)[1:]
-    depth2 = np.load(depth_path_2)
+    depth1 = np.load(depth_path_1)[:398]
+    depth2 = np.load(depth_path_2)[:398]
     assert depth1.shape == depth2.shape, "Shape mismatch between depth arrays"
 
     # Compute pixel-wise MSE averaged over frames
@@ -29,4 +29,4 @@ def plot_pixelwise_mse_heatmap(depth_path_1: str, depth_path_2: str, title="Aver
     plt.show()
 
 
-plot_pixelwise_mse_heatmap('experiments/real_world/modules_teleop/RRL/tasks/cube/sim2real/traj2/sim_depth_obs.npy', 'experiments/real_world/modules_teleop/RRL/tasks/cube/sim2real/traj2/real_depth_obs.npy')
+plot_pixelwise_mse_heatmap('experiments/real_world/modules_teleop/RRL/tasks/cube/sim2real/traj3/sim_depth_obs.npy', 'experiments/real_world/modules_teleop/RRL/tasks/cube/sim2real/traj3/real_depth_obs.npy')

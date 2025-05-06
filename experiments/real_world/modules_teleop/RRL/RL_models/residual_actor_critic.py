@@ -9,15 +9,49 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
-from .res_net import CNNEncoder, ResNetDepthEncoder
 import time
 from typing import Tuple
 
-# from RRL.utilities.traj_generator import save_to_txt
+from RRL.utilities.traj_generator import save_to_txt
 
 '''
 Uses rsl-rl actor critic with visual encoder and residual policy related designs (e.g., orthogonal initialization, small gain factors, low initial standard deviation, and smooth activations (SiLU))
 '''
+
+class CNNEncoder(nn.Module):
+    def __init__(self, output_dim=128):
+        super(CNNEncoder, self).__init__()
+        
+        # Convolutional layers
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=8, stride=4, padding=0),  # (32, 23, 23)
+            nn.ReLU(),
+            nn.BatchNorm2d(32),
+            
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),  # (64, 12, 12)
+            nn.ReLU(),
+            nn.BatchNorm2d(64),
+            
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),  # (64, 12, 12)
+            nn.ReLU(),
+            nn.BatchNorm2d(64),
+            
+            nn.AdaptiveAvgPool2d((6, 6))  # Downsample to (64, 6, 6)
+        )
+        
+        # Fully connected layer
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(64 * 6 * 6, 256),  # Fully connected layer
+            nn.ReLU(),
+            nn.Linear(256, output_dim)   # Map to 128 dimensions
+        )
+    
+    def forward(self, x):
+        x = self.conv_layers(x)
+        x = self.fc(x)
+        x = x / (x.norm(dim=-1, keepdim=True)/5 + 1e-6)
+        return x
 
 def layer_init(layer, nonlinearity="ReLU", std=np.sqrt(2), bias_const=0.0):
     '''
@@ -84,17 +118,17 @@ class ResidualActorCritic(nn.Module):
         num_actor_obs,
         num_critic_obs,
         num_actions,
-        actor_hidden_size=256,
+        actor_hidden_size=512,
         actor_num_layers=2,
-        actor_activation="ReLU",
-        critic_hidden_size=256,
+        actor_activation="SiLU",
+        critic_hidden_size=512,
         critic_num_layers=2,
-        critic_activation="ReLU",
-        init_logstd=-1.5,
-        action_head_std=0.0, # initialization gain of last layer
+        critic_activation="SiLU",
+        init_logstd=-3,
+        action_head_std=0.01, # initialization gain of last layer
         action_scale=0.1, # scale residual in env
-        critic_last_layer_bias_const=0.25,
-        critic_last_layer_std=0.25,
+        critic_last_layer_bias_const=0.0,
+        critic_last_layer_std=1.0,
         critic_last_layer_activation=None,
         use_visual_encoder=True,
         visual_idx_actor=[20,20+120*120],
@@ -196,7 +230,6 @@ class ResidualActorCritic(nn.Module):
         if self.use_visual_encoder:
             visual_obs = observations[:,self.visual_idx_actor[0]:self.visual_idx_actor[1]].reshape(-1, 1, self.Height, self.Width)
             visual_embedding = self.visual_encoder(visual_obs)
-            visual_embedding = visual_embedding / (torch.norm(visual_embedding, dim=-1, keepdim=True)/5 + 1e-6)
             observations = torch.cat((observations[:,:self.visual_idx_actor[0]], visual_embedding), dim=-1)
         mean = self.actor(observations)  # Compute action mean
         log_std = self.actor_logstd.expand_as(mean)  # Learnable log standard deviation
@@ -217,9 +250,7 @@ class ResidualActorCritic(nn.Module):
         if self.use_visual_encoder:
             visual_obs = observations[:,self.visual_idx_actor[0]:self.visual_idx_actor[1]].reshape(-1, 1, self.Height, self.Width)
             visual_embedding = self.visual_encoder(visual_obs)
-            visual_embedding = visual_embedding / (torch.norm(visual_embedding, dim=-1, keepdim=True)/5 + 1e-6)
             observations = torch.cat((observations[:,:self.visual_idx_actor[0]], visual_embedding), dim=-1)
-
         return self.actor(observations)
     
     def evaluate(self, critic_observations, **kwargs):
@@ -229,6 +260,5 @@ class ResidualActorCritic(nn.Module):
         if self.use_visual_encoder:
             visual_obs = critic_observations[:,self.visual_idx_critic[0]:self.visual_idx_critic[1]].reshape(-1, 1, self.Height, self.Width)
             visual_embedding = self.visual_encoder(visual_obs)
-            visual_embedding = visual_embedding / (torch.norm(visual_embedding, dim=-1, keepdim=True)/5 + 1e-6)
             critic_observations = torch.cat((critic_observations[:,:self.visual_idx_critic[0]], visual_embedding), dim=-1)
         return self.critic(critic_observations)

@@ -81,6 +81,12 @@ class PerceptionZED(mp.Process):
             self.close()
             exit(1)
 
+        # print("ZED camera information: ", zed.get_camera_information().camera_configuration.calibration_parameters.left_cam.fx)
+        # print("ZED camera information: ", zed.get_camera_information().camera_configuration.calibration_parameters.left_cam.fy)
+        # print("ZED camera information: ", zed.get_camera_information().camera_configuration.calibration_parameters.left_cam.cx)
+        # print("ZED camera information: ", zed.get_camera_information().camera_configuration.calibration_parameters.left_cam.cy)
+        # print("-0--------------------------------")
+
         # print("ZED camera opened")
 
         # Create and set RuntimeParameters after opening the camera
