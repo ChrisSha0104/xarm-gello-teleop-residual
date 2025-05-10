@@ -12,8 +12,6 @@ from torch.distributions import Normal
 import time
 from typing import Tuple
 
-from RRL.utilities.traj_generator import save_to_txt
-
 '''
 Uses rsl-rl actor critic with visual encoder and residual policy related designs (e.g., orthogonal initialization, small gain factors, low initial standard deviation, and smooth activations (SiLU))
 '''
@@ -118,10 +116,10 @@ class ResidualActorCritic(nn.Module):
         num_actor_obs,
         num_critic_obs,
         num_actions,
-        actor_hidden_size=512,
+        actor_hidden_size=256,
         actor_num_layers=2,
         actor_activation="SiLU",
-        critic_hidden_size=512,
+        critic_hidden_size=256,
         critic_num_layers=2,
         critic_activation="SiLU",
         init_logstd=-3,
@@ -131,8 +129,8 @@ class ResidualActorCritic(nn.Module):
         critic_last_layer_std=1.0,
         critic_last_layer_activation=None,
         use_visual_encoder=True,
-        visual_idx_actor=[20,20+120*120],
-        visual_idx_critic=[29,29+120*120],
+        visual_idx_actor=[60,60+120*120],
+        visual_idx_critic=[73,73+120*120],
         encoder_output_dim=128,
         learn_std=True,
         **kwargs,

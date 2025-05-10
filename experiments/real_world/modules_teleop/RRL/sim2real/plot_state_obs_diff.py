@@ -19,10 +19,8 @@ def plot_sim_vs_real(sim_path: str, real_path: str, title: str = "Sim vs Real", 
     assert os.path.exists(sim_path), f"Sim path not found: {sim_path}"
     assert os.path.exists(real_path), f"Real path not found: {real_path}"
 
-    sim = torch.load(sim_path).detach().cpu()
-    real = torch.load(real_path).detach().cpu()
-    real = real[:-1,:]
-    import pdb; pdb.set_trace()
+    sim = torch.load(sim_path, weights_only=True).detach().cpu()
+    real = torch.load(real_path, weights_only=True).detach().cpu()
     assert sim.shape == real.shape, "Sim and real tensors must have the same shape"
     time, dim = sim.shape
 
@@ -46,5 +44,5 @@ def plot_sim_vs_real(sim_path: str, real_path: str, title: str = "Sim vs Real", 
     plt.show()
 
 dim_labels = ['x', 'y', 'z', 'orn1', 'orn2', 'orn3', 'orn4', 'orn5', 'orn6', 'binary gripper']
-# plot_sim_vs_real("experiments/real_world/modules_teleop/RRL/tasks/cube/sim2real/traj2/sim_state_obs.pt", "experiments/real_world/modules_teleop/RRL/tasks/cube/sim2real/traj2/real_state_obs.pt", title="Robot State difference when deploying the policy using same teleop comm", dim_labels=dim_labels)
-plot_sim_vs_real("experiments/real_world/modules_teleop/RRL/tasks/cube/sim2real/traj2/sim_residual_output.pt", "experiments/real_world/modules_teleop/RRL/tasks/cube/sim2real/traj2/real_residual.pt", title="residual output diff in normalized space", dim_labels=dim_labels)
+plot_sim_vs_real("experiments/real_world/modules_teleop/RRL/tasks/insertion/sim2real/no_res_traj1/sim_state_obs.pt", "experiments/real_world/modules_teleop/RRL/tasks/insertion/sim2real/no_res_traj1/real_state_obs.pt", title="Robot State difference when deploying the policy using same teleop comm", dim_labels=dim_labels)
+plot_sim_vs_real("experiments/real_world/modules_teleop/RRL/tasks/insertion/sim2real/no_res_traj1/sim_residual_output.pt", "experiments/real_world/modules_teleop/RRL/tasks/insertion/sim2real/no_res_traj1/real_residual.pt", title="residual output diff in normalized space", dim_labels=dim_labels)

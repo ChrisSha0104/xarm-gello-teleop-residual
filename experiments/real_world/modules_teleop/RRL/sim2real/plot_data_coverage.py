@@ -69,6 +69,6 @@ def plot_xyz_distribution_with_noise(
     plt.show()
 
 plot_xyz_distribution_with_noise(
-    traj_dir = "RRL/tasks/cube/training_set4"
+    traj_dir = "experiments/real_world/modules_teleop/RRL/tasks/insertion/training_set3"
 )
 

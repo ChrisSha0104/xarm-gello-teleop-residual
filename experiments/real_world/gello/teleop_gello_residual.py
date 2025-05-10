@@ -305,6 +305,7 @@ class GelloTeleopResidual(mp.Process):
         # self.ee_residual = mp.Array('d', [0.0] * 8)
         self.comm_with_residual = mp.Array('d', [0.0] * 8)
         self.start_residual_policy = mp.Value('b', False)
+        self.start_recording = mp.Value('b', False)
 
 
     @staticmethod
@@ -368,13 +369,17 @@ class GelloTeleopResidual(mp.Process):
             time.sleep(0.5)
 
         if self.key_states[","]:
-            self.start_residual_policy.value = True
-            self.log(f" --------------- residual policy started --------------- ")
+            if self.start_residual_policy.value:
+                self.start_residual_policy.value = False
+                self.log(f" --------------- residual policy stopped --------------- ")
+            else:
+                self.start_residual_policy.value = True
+                self.log(f" --------------- residual policy started --------------- ")
             time.sleep(0.5)
         
         if self.key_states["."]:
-            self.start_residual_policy.value = False
-            self.log(f" --------------- residual policy paused --------------- ")
+            self.start_recording.value = True
+            self.log(f" --------------- start recording --------------- ")
             time.sleep(0.5)
 
         if self.pause:

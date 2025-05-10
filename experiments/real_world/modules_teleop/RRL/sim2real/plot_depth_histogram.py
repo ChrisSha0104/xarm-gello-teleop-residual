@@ -11,8 +11,8 @@ def plot_two_depth_histograms(filepath1, filepath2, bins=15):
         bins (int): Number of bins to use for histograms.
     """
     # Load depth data
-    depth_data1 = np.load(filepath1)[:400,:,:]
-    depth_data2 = np.load(filepath2)[:400,:,:]
+    depth_data1 = np.load(filepath1)
+    depth_data2 = np.load(filepath2)
     print(f"Loaded depth data shapes: {depth_data1.shape}, {depth_data2.shape}")
 
     plt.imshow(depth_data1[0], cmap='gray')
@@ -42,4 +42,4 @@ def plot_two_depth_histograms(filepath1, filepath2, bins=15):
 
 if __name__ == "__main__":
     # Example usage: adjust filenames accordingly
-    plot_two_depth_histograms('experiments/real_world/modules_teleop/RRL/tasks/cube/sim2real/traj3/sim_depth_obs.npy', 'experiments/real_world/modules_teleop/RRL/tasks/cube/sim2real/traj3/real_depth_obs.npy', bins=100)
+    plot_two_depth_histograms('experiments/real_world/modules_teleop/RRL/tasks/insertion/sim2real/no_res_traj1/sim_depth_obs.npy', 'experiments/real_world/modules_teleop/RRL/tasks/insertion/sim2real/no_res_traj1/real_depth_obs.npy', bins=100)

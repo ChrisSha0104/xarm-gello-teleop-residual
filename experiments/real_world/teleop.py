@@ -37,7 +37,7 @@ if __name__ == '__main__':
             exp_name=args.name,
             resolution=(848, 480),
             capture_fps=30,
-            # record_fps=30,
+            record_fps=30,
             perception_process_func=None,
             use_robot=True,
             use_gello=True,

@@ -528,7 +528,7 @@ class XarmController(mp.Process):
                             # print("current_state:", current_state)
 
                             max_activate_delta = 0.5 # NOTE: sensitivity for activating teleop
-                            max_delta_norm = 0.10
+                            max_delta_norm = 0.1
                             if not self.teleop_activated.value:
                                 # print("command_state:", command_state)
                                 # print("current_state:", current_state)
@@ -538,7 +538,7 @@ class XarmController(mp.Process):
                                 next_state = current_state
                             else:
                                 if joint_delta_norm > max_delta_norm:
-                                    print('joint_delta_norm:', joint_delta_norm, 'max_joint_delta:', max_joint_delta)
+                                    # print('joint_delta_norm:', joint_delta_norm, 'max_joint_delta:', max_joint_delta)
                                     delta[0:7] = delta[0:7] / joint_delta_norm * max_delta_norm
                                 next_state = current_state + delta
 

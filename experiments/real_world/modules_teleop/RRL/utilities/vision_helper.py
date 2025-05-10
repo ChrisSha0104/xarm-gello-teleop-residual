@@ -282,8 +282,8 @@ def filter_depth_real(real_depth, min_depth=0.1, max_depth=0.45):
 import numpy as np
 
 def add_noise_in_depth_band_np(depth: np.ndarray,
-                               min_d: float = 0.110,
-                               max_d: float = 0.19,
+                               min_d: float = 0.10,
+                               max_d: float = 0.25,
                                mean: float = 0.0,
                                std: float = 0.01,
                                clip_min: float = 0.1,
